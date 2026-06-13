@@ -5,6 +5,6 @@ services:
     network_mode: host
     environment:
       TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
-      OLLAMA_URL: http://127.0.0.1:11434/api/generate
+      OLLAMA_URL: http://127.0.0.1:11434/api/chat
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:1.7b}
     restart: unless-stopped
