@@ -19,6 +19,17 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:1.7b")
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
+HELP_TEXT = (
+    "🤖 사용 가능한 명령어\n\n"
+    "• (그냥 메시지) — 대화. 최근 10턴까지 맥락을 기억해요.\n"
+    "• /news — 국내+해외 주요 뉴스 요약·분석\n"
+    "• /news <키워드> — 키워드 관련 뉴스 (예: /news AI)\n"
+    "• /search <질문> — 웹 검색 후 답변 (예: /search 오늘 환율)\n"
+    "• /reset — 대화 기록 초기화\n"
+    "• /help — 이 도움말 보기\n\n"
+    "ℹ️ 최신 정보나 사실 확인이 필요하면 /search 를 쓰는 걸 권장해요."
+)
+
 # 대화 기록: chat_id -> 최근 메시지들 (user/assistant 합쳐서 최대 MAX_MESSAGES 개)
 # 10턴 = user 10 + assistant 10 = 20개
 MAX_TURNS = 10
@@ -122,6 +133,11 @@ async def telegram(request: Request, background_tasks: BackgroundTasks):
 
     text = message["text"].strip()
     chat_id = message["chat"]["id"]
+
+    # /help, /start — 사용 가능한 명령어 안내
+    if text in ("/help", "/start"):
+        background_tasks.add_task(send_message, chat_id, HELP_TEXT)
+        return {"ok": True}
 
     # /reset 으로 대화 기록 초기화
     if text == "/reset":
