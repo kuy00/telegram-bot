@@ -4,7 +4,7 @@
 
 ## 프로젝트 개요
 
-텔레그램 메시지를 웹훅으로 받아 **로컬 Ollama LLM**(기본 `qwen3:1.7b`)으로
+텔레그램 메시지를 웹훅으로 받아 **로컬 Ollama LLM**(기본 `qwen3:4b`)으로
 답하는 봇. 일반 대화 외에 뉴스 요약(`/news`)과 웹 검색 기반 답변(`/search`)을 지원한다.
 라즈베리파이 같은 저사양 환경에서 도는 것을 전제로 가볍게 설계됐다.
 
@@ -41,6 +41,10 @@
   LLM 생성이 수십 초 걸려도 끊기지 않게 하기 위함.
 - **대화 기록은 `chat_id`별 메모리(`deque(maxlen=20)`)**. 최근 10턴 슬라이딩 윈도우.
   재시작하면 사라짐(영구 저장 아님). `/news`·`/search`는 1회성이라 기록에 넣지 않는다.
+- **`ollama_chat`에서 `think: False`로 추론 모드를 끈다.** qwen3 같은
+  하이브리드 모델의 thinking 토큰 생성이 저사양에서 큰 지연 원인이라 끈다.
+  thinking이 없는 모델(gemma3, exaone3.5 등)에선 이 옵션이 무시되므로 안전.
+  `keep_alive: "30m"`로 모델을 메모리에 유지해 재로딩 지연도 줄인다.
 - **Ollama는 컨테이너가 아니라 호스트에서 직접 구동.** 봇 컨테이너는
   `host.docker.internal`(또는 `network_mode: host` 시 `127.0.0.1`)로 접속한다.
   호스트 Ollama는 `OLLAMA_HOST=0.0.0.0 ollama serve`로 띄워야 컨테이너에서 보인다.
@@ -61,7 +65,7 @@
 |------|------|--------|------|
 | `TELEGRAM_TOKEN` | ✅ | — | @BotFather 봇 토큰. `.env`로 주입 |
 | `OLLAMA_URL` | | `http://127.0.0.1:11434/api/chat` | Ollama chat 엔드포인트 |
-| `OLLAMA_MODEL` | | `qwen3:1.7b` | 사용할 모델 |
+| `OLLAMA_MODEL` | | `qwen3:4b` | 사용할 모델 |
 
 ## 개발 / 실행
 

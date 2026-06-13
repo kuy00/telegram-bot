@@ -16,7 +16,7 @@ app = FastAPI()
 # 환경변수 (docker-compose / .env 에서 주입)
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:1.7b")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:4b")
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
 HELP_TEXT = (
@@ -49,7 +49,16 @@ async def ollama_chat(messages: list[dict]) -> str:
     """Ollama /api/chat 호출 후 답변 텍스트 반환."""
     resp = await client.post(
         OLLAMA_URL,
-        json={"model": OLLAMA_MODEL, "messages": messages, "stream": False},
+        json={
+            "model": OLLAMA_MODEL,
+            "messages": messages,
+            "stream": False,
+            # qwen3 등 하이브리드 모델의 추론(thinking) 모드를 꺼 응답 속도 향상.
+            # thinking 없는 모델(gemma3, exaone3.5 등)에선 무시되므로 안전.
+            "think": False,
+            # 모델을 메모리에 유지해 매 요청마다 재로딩하지 않도록 함
+            "keep_alive": "30m",
+        },
     )
     resp.raise_for_status()
     return resp.json()["message"]["content"]
