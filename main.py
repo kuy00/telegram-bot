@@ -6,6 +6,7 @@ import httpx
 from fastapi import FastAPI, Request, BackgroundTasks
 
 import news
+import search
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("telegram-bot")
@@ -91,6 +92,25 @@ async def process_news(chat_id: int, keyword: str | None):
     await send_message(chat_id, summary)
 
 
+async def process_search(chat_id: int, query: str):
+    """/search: 웹 검색 → 결과를 근거로 Ollama 답변 → 전송. 대화 기록과는 분리."""
+    await send_message(chat_id, f"🔎 '{query}' 검색 중이에요... 잠시만요.")
+
+    results = await search.search(query)
+    if not results:
+        await send_message(chat_id, "검색 결과를 가져오지 못했어요. 잠시 후 다시 시도해 주세요.")
+        return
+
+    prompt = search.build_prompt(query, results)
+    try:
+        answer = await ollama_chat([{"role": "user", "content": prompt}])
+    except Exception:  # noqa: BLE001
+        logger.exception("검색 답변 생성 실패")
+        answer = "⚠️ 답변 생성 중 오류가 발생했어요."
+
+    await send_message(chat_id, answer)
+
+
 @app.post("/telegram")
 async def telegram(request: Request, background_tasks: BackgroundTasks):
     data = await request.json()
@@ -113,6 +133,18 @@ async def telegram(request: Request, background_tasks: BackgroundTasks):
     if text == "/news" or text.startswith("/news "):
         keyword = text[len("/news "):].strip() if text.startswith("/news ") else None
         background_tasks.add_task(process_news, chat_id, keyword or None)
+        return {"ok": True}
+
+    # /search <질문> — 웹 검색 후 답변
+    if text.startswith("/search ") or text.startswith("/ask "):
+        query = text.split(" ", 1)[1].strip()
+        if query:
+            background_tasks.add_task(process_search, chat_id, query)
+        else:
+            background_tasks.add_task(send_message, chat_id, "검색어를 함께 보내주세요. 예) /search 오늘 환율")
+        return {"ok": True}
+    if text in ("/search", "/ask"):
+        background_tasks.add_task(send_message, chat_id, "검색어를 함께 보내주세요. 예) /search 오늘 환율")
         return {"ok": True}
 
     # 일반 대화: 생성은 백그라운드로, 텔레그램에는 즉시 200 응답
