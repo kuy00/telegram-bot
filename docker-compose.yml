@@ -1,21 +1,4 @@
 services:
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    restart: unless-stopped
-    # GPU 를 쓰려면 아래 주석 해제 (NVIDIA + nvidia-container-toolkit 필요)
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
-
   bot:
     build: .
     container_name: telegram-bot
@@ -23,11 +6,9 @@ services:
       - "8000:8000"
     environment:
       TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
-      OLLAMA_URL: http://ollama:11434/api/generate
+      # 호스트에 이미 설치된 Ollama 에 접속
+      OLLAMA_URL: http://host.docker.internal:11434/api/generate
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:1.7b}
-    depends_on:
-      - ollama
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
-
-volumes:
-  ollama_data:
