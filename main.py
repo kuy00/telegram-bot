@@ -2,6 +2,7 @@ import os
 import json
 import logging
 from collections import defaultdict, deque
+from datetime import datetime, timezone, timedelta
 
 import httpx
 from fastapi import FastAPI, Request, BackgroundTasks
@@ -44,6 +45,27 @@ histories: dict[int, deque] = defaultdict(lambda: deque(maxlen=MAX_MESSAGES))
 
 # LLM 추론은 오래 걸릴 수 있으므로 읽기 타임아웃 없음(연결만 10초 제한)
 client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0))
+
+
+# 한국 표준시 (DST 없음 → UTC+9 고정)
+KST = timezone(timedelta(hours=9))
+
+
+def current_kst() -> str:
+    now = datetime.now(KST)
+    weekday = "월화수목금토일"[now.weekday()]
+    return now.strftime(f"%Y년 %m월 %d일 ({weekday}) %H:%M")
+
+
+def sys_msg() -> dict:
+    """매 요청마다 현재 한국 시각을 모델에 주입해 '오늘/어제/지금'을 정확히 해석시킨다."""
+    return {
+        "role": "system",
+        "content": (
+            f"너는 한국어로 답하는 텔레그램 봇 비서야. 현재 한국 시각은 {current_kst()}야. "
+            "'오늘'·'어제'·'지금' 같은 표현은 반드시 이 시각을 기준으로 해석해라."
+        ),
+    }
 
 
 @app.get("/health")
@@ -174,7 +196,8 @@ async def process_message(text: str, chat_id: int):
 
     try:
         # 에이전트 루프: 모델이 필요하다고 판단하면 web_search/get_news 를 스스로 호출
-        answer = await run_agent(list(history), chat_id)
+        # 시스템 메시지(현재 시각)는 매 턴 새로 앞에 붙이고 기록엔 저장하지 않음
+        answer = await run_agent([sys_msg()] + list(history), chat_id)
         # 최종 답변만 기록에 남김(도구 왕복 메시지는 저장하지 않아 윈도우를 아낌)
         history.append({"role": "assistant", "content": answer})
     except Exception:  # noqa: BLE001
@@ -199,7 +222,7 @@ async def process_news(chat_id: int, keyword: str | None):
     prompt = news.build_prompt(headlines, keyword)
     try:
         # 1회성 요약 — 대화 기록에 넣지 않음
-        summary = await ollama_chat([{"role": "user", "content": prompt}])
+        summary = await ollama_chat([sys_msg(), {"role": "user", "content": prompt}])
     except Exception:  # noqa: BLE001
         logger.exception("뉴스 요약 실패")
         summary = "⚠️ 뉴스 요약 중 오류가 발생했어요."
@@ -218,7 +241,7 @@ async def process_search(chat_id: int, query: str):
 
     prompt = search.build_prompt(query, data)
     try:
-        answer = await ollama_chat([{"role": "user", "content": prompt}])
+        answer = await ollama_chat([sys_msg(), {"role": "user", "content": prompt}])
     except Exception:  # noqa: BLE001
         logger.exception("검색 답변 생성 실패")
         answer = "⚠️ 답변 생성 중 오류가 발생했어요."
