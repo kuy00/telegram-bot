@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from collections import defaultdict, deque
 
@@ -25,14 +26,14 @@ ALLOWED_CHAT_IDS = {
 }
 
 HELP_TEXT = (
-    "🤖 사용 가능한 명령어\n\n"
-    "• (그냥 메시지) — 대화. 최근 10턴까지 맥락을 기억해요.\n"
-    "• /news — 국내+해외 주요 뉴스 요약·분석\n"
-    "• /news <키워드> — 키워드 관련 뉴스 (예: /news AI)\n"
+    "🤖 사용 방법\n\n"
+    "• 그냥 질문하세요 — 필요하면 봇이 알아서 웹 검색·뉴스를 찾아 답해요.\n"
+    "  (최근 10턴까지 대화 맥락을 기억합니다.)\n\n"
+    "강제로 쓰고 싶을 때 쓰는 명령어:\n"
+    "• /news, /news <키워드> — 뉴스 요약 (예: /news AI)\n"
     "• /search <질문> — 웹 검색 후 답변 (예: /search 오늘 환율)\n"
     "• /reset — 대화 기록 초기화\n"
-    "• /help — 이 도움말 보기\n\n"
-    "ℹ️ 최신 정보나 사실 확인이 필요하면 /search 를 쓰는 걸 권장해요."
+    "• /help — 이 도움말 보기"
 )
 
 # 대화 기록: chat_id -> 최근 메시지들 (user/assistant 합쳐서 최대 MAX_MESSAGES 개)
@@ -50,23 +51,115 @@ async def health():
     return {"status": "ok"}
 
 
-async def ollama_chat(messages: list[dict]) -> str:
-    """Ollama /api/chat 호출 후 답변 텍스트 반환."""
-    resp = await client.post(
-        OLLAMA_URL,
-        json={
-            "model": OLLAMA_MODEL,
-            "messages": messages,
-            "stream": False,
-            # qwen3 등 하이브리드 모델의 추론(thinking) 모드를 꺼 응답 속도 향상.
-            # thinking 없는 모델(gemma3, exaone3.5 등)에선 무시되므로 안전.
-            "think": False,
-            # 모델을 메모리에 유지해 매 요청마다 재로딩하지 않도록 함
-            "keep_alive": "30m",
-        },
-    )
+async def ollama_call(messages: list[dict], tools: list | None = None) -> dict:
+    """Ollama /api/chat 호출 후 message 객체(dict) 반환. tools 주면 도구 사용 허용."""
+    payload = {
+        "model": OLLAMA_MODEL,
+        "messages": messages,
+        "stream": False,
+        # qwen3 등 하이브리드 모델의 추론(thinking) 모드를 꺼 응답 속도 향상.
+        # thinking 없는 모델(gemma3, exaone3.5 등)에선 무시되므로 안전.
+        "think": False,
+        # 모델을 메모리에 유지해 매 요청마다 재로딩하지 않도록 함
+        "keep_alive": "30m",
+    }
+    if tools:
+        payload["tools"] = tools
+    resp = await client.post(OLLAMA_URL, json=payload)
     resp.raise_for_status()
-    return resp.json()["message"]["content"]
+    return resp.json()["message"]
+
+
+async def ollama_chat(messages: list[dict]) -> str:
+    """도구 없이 단순 답변 텍스트만 필요할 때(/news, /search) 사용."""
+    msg = await ollama_call(messages)
+    return msg.get("content", "")
+
+
+# ── 에이전트: 모델이 필요할 때 스스로 호출하는 도구들 ──────────────────────────
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": (
+                "최신 정보나 사실 확인이 필요할 때 웹을 검색한다. "
+                "시세·환율·날씨·최근 사건 등 학습 시점 이후의 정보에 사용."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "검색어"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_news",
+            "description": "최신 뉴스 헤드라인을 가져온다. 키워드를 주면 관련 뉴스, 없으면 주요 뉴스.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {"type": "string", "description": "뉴스 키워드 (선택)"},
+                },
+            },
+        },
+    },
+]
+
+MAX_TOOL_ROUNDS = 3  # 무한 루프 방지: 도구 호출 왕복 횟수 제한
+
+
+async def exec_tool(name: str, args: dict, chat_id: int) -> str:
+    """도구 이름에 맞춰 실제 함수 실행 후 결과 텍스트 반환."""
+    if name == "web_search":
+        query = (args.get("query") or "").strip()
+        await send_message(chat_id, f"🔎 '{query}' 검색 중...")
+        results = await search.search(query)
+        if not results:
+            return "검색 결과가 없습니다."
+        return "\n\n".join(
+            f"{r.get('title','')}\n{r.get('body','')}\n출처: {r.get('href','')}"
+            for r in results
+        )
+    if name == "get_news":
+        keyword = (args.get("keyword") or "").strip() or None
+        await send_message(chat_id, "📰 뉴스 수집 중...")
+        headlines = await news.fetch_headlines(client, keyword)
+        if not headlines:
+            return "뉴스를 가져오지 못했습니다."
+        return "\n".join(f"[{h['label']}] {h['title']}" for h in headlines)
+    return f"알 수 없는 도구: {name}"
+
+
+async def run_agent(messages: list[dict], chat_id: int) -> str:
+    """모델이 도구를 호출하면 실행해 결과를 돌려주는 ReAct 루프. 최종 답변 텍스트 반환."""
+    msgs = list(messages)
+    for _ in range(MAX_TOOL_ROUNDS):
+        msg = await ollama_call(msgs, tools=TOOLS)
+        tool_calls = msg.get("tool_calls")
+        if not tool_calls:
+            return msg.get("content", "")
+
+        msgs.append(msg)  # 도구 호출을 요청한 assistant 메시지
+        for tc in tool_calls:
+            fn = tc.get("function", {})
+            name = fn.get("name", "")
+            args = fn.get("arguments") or {}
+            if isinstance(args, str):  # 일부 모델은 arguments 를 문자열로 반환
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {}
+            result = await exec_tool(name, args, chat_id)
+            msgs.append({"role": "tool", "content": result})
+
+    # 도구 왕복 한도 소진 — 도구 없이 마지막으로 답을 강제
+    final = await ollama_call(msgs)
+    return final.get("content", "") or "답변을 생성하지 못했어요."
 
 
 async def send_message(chat_id: int, text: str):
@@ -84,8 +177,9 @@ async def process_message(text: str, chat_id: int):
     history.append({"role": "user", "content": text})
 
     try:
-        answer = await ollama_chat(list(history))
-        # 모델 응답도 기록에 남겨 다음 턴의 맥락으로 사용
+        # 에이전트 루프: 모델이 필요하다고 판단하면 web_search/get_news 를 스스로 호출
+        answer = await run_agent(list(history), chat_id)
+        # 최종 답변만 기록에 남김(도구 왕복 메시지는 저장하지 않아 윈도우를 아낌)
         history.append({"role": "assistant", "content": answer})
     except Exception:  # noqa: BLE001
         logger.exception("Ollama 호출 실패")
