@@ -6,5 +6,6 @@ services:
     environment:
       TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
       OLLAMA_URL: http://127.0.0.1:11434/api/chat
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:1.7b}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:4b}
+      ALLOWED_CHAT_IDS: ${ALLOWED_CHAT_IDS:-}
     restart: unless-stopped

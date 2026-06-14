@@ -66,6 +66,7 @@
 | `TELEGRAM_TOKEN` | ✅ | — | @BotFather 봇 토큰. `.env`로 주입 |
 | `OLLAMA_URL` | | `http://127.0.0.1:11434/api/chat` | Ollama chat 엔드포인트 |
 | `OLLAMA_MODEL` | | `qwen3:4b` | 사용할 모델 |
+| `ALLOWED_CHAT_IDS` | | (빈 값) | 허용할 chat_id 콤마 목록. 비면 전체 허용 |
 
 ## 개발 / 실행
 

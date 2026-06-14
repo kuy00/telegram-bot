@@ -19,6 +19,11 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:4b")
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
+# 허용된 chat_id 목록 (콤마 구분). 비어 있으면 전체 허용.
+ALLOWED_CHAT_IDS = {
+    int(x) for x in os.environ.get("ALLOWED_CHAT_IDS", "").replace(" ", "").split(",") if x
+}
+
 HELP_TEXT = (
     "🤖 사용 가능한 명령어\n\n"
     "• (그냥 메시지) — 대화. 최근 10턴까지 맥락을 기억해요.\n"
@@ -142,6 +147,11 @@ async def telegram(request: Request, background_tasks: BackgroundTasks):
 
     text = message["text"].strip()
     chat_id = message["chat"]["id"]
+
+    # allowlist 가 설정돼 있으면 허용된 chat_id 외에는 무시
+    if ALLOWED_CHAT_IDS and chat_id not in ALLOWED_CHAT_IDS:
+        logger.info("허용되지 않은 chat_id 무시: %s", chat_id)
+        return {"ok": True}
 
     # /help, /start — 사용 가능한 명령어 안내
     if text in ("/help", "/start"):
