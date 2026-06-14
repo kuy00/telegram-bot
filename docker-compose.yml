@@ -8,4 +8,5 @@ services:
       OLLAMA_URL: http://127.0.0.1:11434/api/chat
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:4b}
       ALLOWED_CHAT_IDS: ${ALLOWED_CHAT_IDS:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
     restart: unless-stopped

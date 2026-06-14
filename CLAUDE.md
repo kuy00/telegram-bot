@@ -30,7 +30,10 @@
   텔레그램 전송(`send_message`), 대화 기록 관리.
 - **`news.py`** — Google 뉴스 RSS 수집(`fetch_headlines`)과 요약 프롬프트 생성(`build_prompt`).
   API 키 불필요. 국내(ko)+해외(en) 피드, 피드당 `PER_FEED`(기본 5)개.
-- **`search.py`** — DuckDuckGo 웹 검색(`ddgs`). API 키 불필요. `MAX_RESULTS`(기본 5)개.
+- **`search.py`** — 웹 검색. `TAVILY_API_KEY` 있으면 Tavily(본문·요약 제공,
+  날씨·스코어 등 구체 사실에 강함), 없으면 DuckDuckGo(`ddgs`, 스니펫만)로 폴백.
+  `search(client, query)` → `{"answer", "results":[{title,url,content}]}` 반환.
+  Tavily 호출 실패 시에도 ddgs로 폴백한다. `MAX_RESULTS`(기본 5)개.
 
 ## 핵심 설계 결정 (수정 시 주의)
 
@@ -73,6 +76,7 @@
 | `OLLAMA_URL` | | `http://127.0.0.1:11434/api/chat` | Ollama chat 엔드포인트 |
 | `OLLAMA_MODEL` | | `qwen3:4b` | 사용할 모델 |
 | `ALLOWED_CHAT_IDS` | | (빈 값) | 허용할 chat_id 콤마 목록. 비면 전체 허용 |
+| `TAVILY_API_KEY` | | (빈 값) | Tavily 검색 키. 있으면 Tavily, 없으면 DuckDuckGo |
 
 ## 개발 / 실행
 
@@ -104,5 +108,5 @@ curl http://localhost:8000/health   # {"status":"ok"}
 ## 향후 개선 후보 (아직 미구현)
 
 - 대화 기록 영구 저장(SQLite)과 오래된 `chat_id` 정리(메모리 누수 방지)
-- 검색을 Tavily 등 LLM 친화 API로 교체(ddgs 스크래핑은 가끔 막힘)
 - `/news` 정기 자동 발송(cron)
+- 날씨 전용 도구(wttr.in 등) — 실시간 날씨는 검색 스니펫으로 약함

@@ -118,13 +118,9 @@ async def exec_tool(name: str, args: dict, chat_id: int) -> str:
     if name == "web_search":
         query = (args.get("query") or "").strip()
         await send_message(chat_id, f"🔎 '{query}' 검색 중...")
-        results = await search.search(query)
-        if not results:
-            return "검색 결과가 없습니다."
-        return "\n\n".join(
-            f"{r.get('title','')}\n{r.get('body','')}\n출처: {r.get('href','')}"
-            for r in results
-        )
+        data = await search.search(client, query)
+        context = search.to_context(data)
+        return context or "검색 결과가 없습니다."
     if name == "get_news":
         keyword = (args.get("keyword") or "").strip() or None
         await send_message(chat_id, "📰 뉴스 수집 중...")
@@ -215,12 +211,12 @@ async def process_search(chat_id: int, query: str):
     """/search: 웹 검색 → 결과를 근거로 Ollama 답변 → 전송. 대화 기록과는 분리."""
     await send_message(chat_id, f"🔎 '{query}' 검색 중이에요... 잠시만요.")
 
-    results = await search.search(query)
-    if not results:
+    data = await search.search(client, query)
+    if not data["results"] and not data["answer"]:
         await send_message(chat_id, "검색 결과를 가져오지 못했어요. 잠시 후 다시 시도해 주세요.")
         return
 
-    prompt = search.build_prompt(query, results)
+    prompt = search.build_prompt(query, data)
     try:
         answer = await ollama_chat([{"role": "user", "content": prompt}])
     except Exception:  # noqa: BLE001
