@@ -30,6 +30,13 @@
   텔레그램 전송(`send_message`), 대화 기록 관리.
 - **`news.py`** — Google 뉴스 RSS 수집(`fetch_headlines`)과 요약 프롬프트 생성(`build_prompt`).
   API 키 불필요. 국내(ko)+해외(en) 피드, 피드당 `PER_FEED`(기본 5)개.
+- **`status.py`** — 서버(라즈베리파이) 상태 점검. 추가 의존성 없이 `/proc`·`/sys` 직접 읽기.
+  온도·CPU·부하·메모리·디스크·전원(저전압/스로틀)·가동시간·Ollama 상태 수집.
+  `report(client)` → 텔레그램용 텍스트. 전원은 파이 펌웨어 throttle 비트마스크
+  (`/sys/.../get_throttled`, vcgencmd 와 동일 값)로 저전압·스로틀 이력까지 잡는다.
+  **컨테이너 안에서도 `/proc`·`/sys`는 호스트 커널 값을 반영**하므로 온도·메모리·부하·CPU는
+  파이 호스트 기준으로 정확하다. **디스크만 컨테이너 오버레이FS 기준** — 정확히 보려면
+  `docker-compose.yml`에서 호스트 루트를 ro 마운트하고 `DISK_PATH`로 가리킨다.
 - **`search.py`** — 웹 검색. `TAVILY_API_KEY` 있으면 Tavily(본문·요약 제공,
   날씨·스코어 등 구체 사실에 강함), 없으면 DuckDuckGo(`ddgs`, 스니펫만)로 폴백.
   `search(client, query)` → `{"answer", "results":[{title,url,content}]}` 반환.
@@ -65,6 +72,7 @@
 | (일반 텍스트) | 에이전트 대화(필요시 도구 자동 호출), 최근 10턴 기억 | `process_message`→`run_agent` |
 | `/news [키워드]` | 뉴스 수집→요약 (수동) | `process_news` |
 | `/search <질문>`, `/ask <질문>` | 웹 검색→답변 | `process_search` |
+| `/status` | 서버 상태(온도·전원·CPU·메모리·디스크) | `process_status` |
 | `/reset` | 대화 기록 초기화 | (인라인) |
 | `/help`, `/start` | 도움말 | (인라인, `HELP_TEXT`) |
 
@@ -77,6 +85,7 @@
 | `OLLAMA_MODEL` | | `qwen3:4b` | 사용할 모델 |
 | `ALLOWED_CHAT_IDS` | | (빈 값) | 허용할 chat_id 콤마 목록. 비면 전체 허용 |
 | `TAVILY_API_KEY` | | (빈 값) | Tavily 검색 키. 있으면 Tavily, 없으면 DuckDuckGo |
+| `DISK_PATH` | | `/` | `/status` 디스크 측정 경로. 호스트 루트 마운트 시 그 경로로 지정 |
 
 ## 개발 / 실행
 

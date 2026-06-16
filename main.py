@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, BackgroundTasks
 
 import news
 import search
+import status
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("telegram-bot")
@@ -33,6 +34,7 @@ HELP_TEXT = (
     "강제로 쓰고 싶을 때 쓰는 명령어:\n"
     "• /news, /news <키워드> — 뉴스 요약 (예: /news AI)\n"
     "• /search <질문> — 웹 검색 후 답변 (예: /search 오늘 환율)\n"
+    "• /status — 서버(라즈베리파이) 상태 확인 (온도·전원·CPU·메모리·디스크)\n"
     "• /reset — 대화 기록 초기화\n"
     "• /help — 이 도움말 보기"
 )
@@ -136,6 +138,18 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_status",
+            "description": (
+                "이 봇이 돌아가는 서버(라즈베리파이)의 현재 상태를 확인한다. "
+                "CPU 온도·사용률·부하·메모리·디스크·전원(저전압/스로틀)·가동시간·Ollama 상태를 반환. "
+                "'서버 괜찮아?', '온도 몇 도야?', '전원 괜찮아?', '메모리 얼마나 써?' 같은 질문에 사용."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 MAX_TOOL_ROUNDS = 3  # 무한 루프 방지: 도구 호출 왕복 횟수 제한
@@ -156,6 +170,9 @@ async def exec_tool(name: str, args: dict, chat_id: int) -> str:
         if not headlines:
             return "뉴스를 가져오지 못했습니다."
         return "\n".join(f"[{h['label']}] {h['title']}" for h in headlines)
+    if name == "get_status":
+        await send_message(chat_id, "🖥 서버 상태 확인 중...")
+        return await status.report(client)
     return f"알 수 없는 도구: {name}"
 
 
@@ -255,6 +272,16 @@ async def process_search(chat_id: int, query: str):
     await send_message(chat_id, answer)
 
 
+async def process_status(chat_id: int):
+    """/status: 서버 상태를 그대로 전송. LLM을 거치지 않아 빠르고 정확하다."""
+    try:
+        text = await status.report(client)
+    except Exception:  # noqa: BLE001
+        logger.exception("서버 상태 수집 실패")
+        text = "⚠️ 서버 상태를 읽는 중 오류가 발생했어요."
+    await send_message(chat_id, text)
+
+
 @app.post("/telegram")
 async def telegram(request: Request, background_tasks: BackgroundTasks):
     data = await request.json()
@@ -281,6 +308,11 @@ async def telegram(request: Request, background_tasks: BackgroundTasks):
     if text == "/reset":
         histories.pop(chat_id, None)
         background_tasks.add_task(send_message, chat_id, "🧹 대화 기록을 초기화했어요.")
+        return {"ok": True}
+
+    # /status — 서버(라즈베리파이) 상태 확인. LLM 없이 즉시 응답.
+    if text == "/status":
+        background_tasks.add_task(process_status, chat_id)
         return {"ok": True}
 
     # /news [키워드] — 키워드 없으면 전체 주요 뉴스
