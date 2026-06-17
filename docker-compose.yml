@@ -3,13 +3,14 @@ services:
     build: .
     container_name: telegram-bot
     network_mode: host
+    # .env 의 변수를 통째로 주입한다. 새 환경변수를 추가할 때 여기 손댈 필요 없이
+    # .env 에만 적으면 컨테이너로 들어간다(과거 compose 에 누락해 검증이 안 먹힌 이력 방지).
+    env_file:
+      - .env
+    # .env 에 없을 때의 기본값/고정값만 여기서 지정. environment 가 env_file 보다 우선.
     environment:
-      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
-      OLLAMA_URL: http://127.0.0.1:11434/api/chat
+      OLLAMA_URL: ${OLLAMA_URL:-http://127.0.0.1:11434/api/chat}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:4b}
-      ALLOWED_CHAT_IDS: ${ALLOWED_CHAT_IDS:-}
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
-      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       # /status 디스크 측정 경로. 기본 '/'는 컨테이너 오버레이FS라 SD카드와 다르다.
       # 호스트 SD카드 실사용량을 보려면 아래 volumes 의 호스트 루트 마운트를 켜고
       # DISK_PATH 를 그 경로(/host)로 바꾸면 된다.

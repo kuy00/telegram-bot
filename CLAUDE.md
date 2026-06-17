@@ -109,6 +109,13 @@ curl http://localhost:8000/health   # {"status":"ok"}
 
 - **새 `.py` 모듈을 추가하면 `Dockerfile`의 `COPY *.py .`로 들어가는지 확인.**
   과거 `main.py`만 복사해서 `ModuleNotFoundError`가 났던 이력 있음.
+- **새 환경변수는 `.env`에만 적으면 된다.** `docker-compose.yml`이 `env_file: .env`로
+  통째로 주입하므로 compose 를 손댈 필요 없다. (과거엔 `environment:`에 변수를 하나씩
+  나열해서, `WEBHOOK_SECRET`을 거기 빠뜨려 `.env`에 적고도 검증이 안 먹힌 적 있음 →
+  env_file 방식으로 바꿔 해결.) 단 `OLLAMA_URL`·`DISK_PATH`처럼 `.env`에 없을 때의
+  기본값은 compose 의 `environment:`에 남겨뒀고, 이건 env_file 보다 우선한다.
+  새 변수 추가 시 챙길 곳: ① `main.py`의 `os.environ` 읽기 ② `.env.example`
+  ③ 이 문서의 환경변수 표.
 - **`/news`, `/search`가 비는 경우** — RSS/DuckDuckGo가 일시 차단되거나 결과가
   없을 수 있다. 코드는 빈 결과 시 안내 메시지를 보내고 끝낸다(예외로 죽지 않음).
 - **메시지를 보내도 봇이 무반응** — 봇 컨테이너 실행 여부와 텔레그램 `setWebhook`
