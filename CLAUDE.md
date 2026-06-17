@@ -84,6 +84,7 @@
 | `OLLAMA_URL` | | `http://127.0.0.1:11434/api/chat` | Ollama chat 엔드포인트 |
 | `OLLAMA_MODEL` | | `qwen3:4b` | 사용할 모델 |
 | `ALLOWED_CHAT_IDS` | | (빈 값) | 허용할 chat_id 콤마 목록. 비면 전체 허용 |
+| `WEBHOOK_SECRET` | | (빈 값) | 웹훅 비밀 토큰. `setWebhook`의 `secret_token`과 동일 값. 설정 시 `X-Telegram-Bot-Api-Secret-Token` 헤더 불일치 요청을 403 거절. 비면 검증 안 함 |
 | `TAVILY_API_KEY` | | (빈 값) | Tavily 검색 키. 있으면 Tavily, 없으면 DuckDuckGo |
 | `DISK_PATH` | | `/` | `/status` 디스크 측정 경로. 호스트 루트 마운트 시 그 경로로 지정 |
 

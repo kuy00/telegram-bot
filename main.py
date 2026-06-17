@@ -5,7 +5,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone, timedelta
 
 import httpx
-from fastapi import FastAPI, Request, BackgroundTasks
+from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 
 import news
 import search
@@ -26,6 +26,11 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 ALLOWED_CHAT_IDS = {
     int(x) for x in os.environ.get("ALLOWED_CHAT_IDS", "").replace(" ", "").split(",") if x
 }
+
+# 웹훅 비밀 토큰. 설정하면 setWebhook 의 secret_token 과 같은 값을 넣어야 하며,
+# 텔레그램이 매 요청에 붙이는 X-Telegram-Bot-Api-Secret-Token 헤더와 비교해
+# 일치하지 않는 요청(=텔레그램이 보낸 게 아닌 직접 호출)은 거절한다. 비면 검증 안 함.
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
 HELP_TEXT = (
     "🤖 사용 방법\n\n"
@@ -284,6 +289,13 @@ async def process_status(chat_id: int):
 
 @app.post("/telegram")
 async def telegram(request: Request, background_tasks: BackgroundTasks):
+    # 비밀 토큰 검증: 설정돼 있으면 텔레그램이 붙인 헤더와 일치해야만 처리.
+    # (텔레그램을 거치지 않은 임의의 직접 호출 차단)
+    if WEBHOOK_SECRET:
+        if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
+            logger.warning("웹훅 비밀 토큰 불일치 — 요청 거절")
+            raise HTTPException(status_code=403, detail="forbidden")
+
     data = await request.json()
 
     # 텍스트 메시지가 아닌 업데이트(사진, 멤버 변경 등)는 무시
