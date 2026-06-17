@@ -8,6 +8,7 @@ services:
       OLLAMA_URL: http://127.0.0.1:11434/api/chat
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:4b}
       ALLOWED_CHAT_IDS: ${ALLOWED_CHAT_IDS:-}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       # /status 디스크 측정 경로. 기본 '/'는 컨테이너 오버레이FS라 SD카드와 다르다.
       # 호스트 SD카드 실사용량을 보려면 아래 volumes 의 호스트 루트 마운트를 켜고
