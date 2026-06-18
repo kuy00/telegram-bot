@@ -3,20 +3,26 @@
 FastAPI 웹훅으로 텔레그램 메시지를 받아 **호스트에 설치된 Ollama** LLM 으로 답변하는 봇.
 
 ## 구성
-- `main.py` — FastAPI 웹훅 서버 + 명령 라우팅
+- `main.py` — FastAPI 웹훅 서버 + 명령 라우팅 + 에이전트 루프
 - `news.py` — Google 뉴스 RSS 수집
-- `search.py` — DuckDuckGo 웹 검색
+- `search.py` — 웹 검색 (`TAVILY_API_KEY` 있으면 Tavily, 없으면 DuckDuckGo 폴백)
+- `status.py` — 서버(라즈베리파이) 상태 점검 (온도·CPU·메모리·디스크·전원)
+- `aircon.py` — 에어컨 IR 제어 서버(ir_server) 연동
 - `bot` 컨테이너 — 웹훅 서버. Ollama 는 호스트에서 직접 구동.
 
 ## 명령어
-- 일반 메시지 — 대화. 최근 10턴 맥락을 기억함
-- `/news` — 국내+해외 주요 뉴스 요약·분석
-- `/news <키워드>` — 키워드 관련 뉴스 요약 (예: `/news AI`)
-- `/search <질문>` — 웹 검색 후 그 결과를 근거로 답변 (예: `/search 오늘 환율`)
+- 일반 메시지 — 대화. 필요하면 봇이 **알아서 웹 검색·뉴스·서버상태·에어컨 도구를
+  호출**해 답한다(에이전트). 최근 10턴 맥락을 기억함
+- `/news`, `/news <키워드>` — 뉴스 요약·분석 (예: `/news AI`)
+- `/search <질문>`, `/ask <질문>` — 웹 검색 후 그 결과를 근거로 답변 (예: `/search 오늘 환율`)
+- `/status` — 서버 상태 확인 (온도·전원·CPU·메모리·디스크)
+- `/ac on <모드> <온도>` · `/ac off` · `/ac list` — 에어컨 제어 (예: `/ac on 냉방 25`)
 - `/reset` — 대화 기록 초기화
+- `/help`, `/start` — 도움말
 
-> 작은 모델(qwen3:1.7b)은 모르는 것도 지어낼 수 있어, 최신·사실 확인이
-> 필요한 질문은 그냥 대화 대신 `/search` 를 쓰는 걸 권장.
+> 일반 대화에서도 모델이 판단해 도구를 부르지만, 오판할 때를 대비한 **강제 경로**로
+> `/news`·`/search`·`/status`·`/ac` 수동 명령을 그대로 둔다.
+> 환경변수·설계 상세는 `CLAUDE.md` 참고.
 
 ## 1. 준비
 
@@ -35,7 +41,7 @@ OLLAMA_HOST=0.0.0.0 ollama serve
 ```
 
 > 앱(메뉴바) 형태로 켜둔 Ollama 라면 종료하고 위 명령으로 다시 실행.
-> 모델은 한 번만 받아두면 된다: `ollama pull qwen3:1.7b`
+> 모델은 한 번만 받아두면 된다: `ollama pull qwen3:4b` (기본 모델)
 
 ## 3. 봇 실행
 
@@ -63,6 +69,13 @@ ngrok http 8000
 ```bash
 curl "https://api.telegram.org/bot<TELEGRAM_TOKEN>/setWebhook?url=https://<your-domain>/telegram"
 ```
+
+> `.env` 에 `WEBHOOK_SECRET` 을 설정했다면, 등록 시 같은 값을 `secret_token` 으로
+> 함께 넣어야 한다(불일치 직접 호출을 봇이 403 거절):
+> ```bash
+> curl "https://api.telegram.org/bot<TELEGRAM_TOKEN>/setWebhook" \
+>   -d "url=https://<your-domain>/telegram" -d "secret_token=<WEBHOOK_SECRET 와 동일 값>"
+> ```
 
 이제 봇에게 메시지를 보내면 Ollama 가 생성한 답변이 돌아온다.
 
