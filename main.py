@@ -256,7 +256,7 @@ async def exec_tool(name: str, args: dict, chat_id: int) -> str:
         except Exception:  # noqa: BLE001
             logger.exception("에어컨 제어 오류")
             return "에어컨 제어 중 오류가 발생했습니다."
-        return f"에어컨 송신 완료: {result.get('label')} ({result.get('source')})"
+        return f"에어컨 송신 완료: {result.get('label')}"
     return f"알 수 없는 도구: {name}"
 
 
@@ -378,7 +378,7 @@ async def _ac_send(chat_id: int, **kwargs):
         logger.exception("에어컨 제어 오류")
         await send_message(chat_id, "⚠️ 에어컨 제어 중 오류가 발생했어요.")
         return
-    await send_message(chat_id, f"✅ 송신 완료: {result.get('label')} ({result.get('source')})")
+    await send_message(chat_id, f"✅ 송신 완료: {result.get('label')}")
 
 
 async def process_ac(chat_id: int, arg: str):
