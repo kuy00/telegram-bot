@@ -1,5 +1,4 @@
 import os
-import re
 import json
 import logging
 from collections import defaultdict, deque
@@ -383,30 +382,7 @@ async def _ac_send(chat_id: int, **kwargs):
         logger.exception("에어컨 제어 오류")
         await send_message(chat_id, "⚠️ 에어컨 제어 중 오류가 발생했어요.")
         return
-    # 끌 때는 라벨에 직전 모드·온도(난방_18_off)가 박혀 헷갈리므로 숨긴다.
-    if kwargs.get("power") == "off" or str(result.get("label", "")).endswith("_off"):
-        await send_message(chat_id, "✅ 에어컨을 껐습니다.")
-    else:
-        await send_message(chat_id, f"✅ 송신 완료: {result.get('label')}")
-
-
-# 명백한 에어컨 켜기/끄기 발화는 LLM(수십 초~수 분)을 건너뛰고 바로 ir_server 로
-# 보내 즉시 응답한다. 모드·온도가 애매한 켜기는 None 을 돌려 에이전트 경로로 넘긴다.
-def match_aircon(text: str) -> dict | None:
-    t = text.replace(" ", "")
-    if "에어컨" not in t and "에어콘" not in t:
-        return None
-    # 끄기: 흔하고 모호하지 않음
-    if any(k in t for k in ("꺼", "끄", "off", "오프")):
-        return {"power": "off"}
-    # 켜기: 모드+온도가 분명할 때만 지름길, 아니면 에이전트로
-    if any(k in t for k in ("켜", "틀", "on")):
-        mode = "냉방" if "냉방" in t else ("난방" if "난방" in t else None)
-        m = re.search(r"(\d{1,2})\s*도", t)
-        temp = int(m.group(1)) if m else None
-        if mode and temp is not None:
-            return {"mode": mode, "temp": temp, "power": "on"}
-    return None
+    await send_message(chat_id, f"✅ 송신 완료: {result.get('label')}")
 
 
 async def process_ac(chat_id: int, arg: str):
@@ -507,13 +483,6 @@ async def telegram(request: Request, background_tasks: BackgroundTasks):
         return {"ok": True}
     if text in ("/search", "/ask"):
         background_tasks.add_task(send_message, chat_id, "검색어를 함께 보내주세요. 예) /search 오늘 환율")
-        return {"ok": True}
-
-    # 명백한 에어컨 켜기/끄기는 LLM 추론(파이에서 수십 초~수 분)을 건너뛰고
-    # ir_server 로 직행해 즉시 응답한다. 애매하면 None → 아래 에이전트 경로로.
-    ac_kwargs = match_aircon(text)
-    if ac_kwargs is not None:
-        background_tasks.add_task(_ac_send, chat_id, **ac_kwargs)
         return {"ok": True}
 
     # 일반 대화: 생성은 백그라운드로, 텔레그램에는 즉시 200 응답
