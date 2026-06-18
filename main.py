@@ -256,6 +256,10 @@ async def exec_tool(name: str, args: dict, chat_id: int) -> str:
         except Exception:  # noqa: BLE001
             logger.exception("에어컨 제어 오류")
             return "에어컨 제어 중 오류가 발생했습니다."
+        # 끌 때는 라벨에 직전 모드·온도(예: 난방_18_off)가 박혀 있어 모델이
+        # 의미 없는 사족("난방 18도에서 꺼졌다")을 붙인다 → 끄기는 라벨을 숨긴다.
+        if power == "off" or str(result.get("label", "")).endswith("_off"):
+            return "에어컨을 껐습니다."
         return f"에어컨 송신 완료: {result.get('label')}"
     return f"알 수 없는 도구: {name}"
 
