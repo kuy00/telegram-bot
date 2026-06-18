@@ -67,6 +67,16 @@
   하이브리드 모델의 thinking 토큰 생성이 저사양에서 큰 지연 원인이라 끈다.
   thinking이 없는 모델(gemma3, exaone3.5 등)에선 이 옵션이 무시되므로 안전.
   `keep_alive: "30m"`로 모델을 메모리에 유지해 재로딩 지연도 줄인다.
+- **파이 추론 속도 튜닝.** CPU 추론은 답변 생성보다 **프롬프트 처리(prefill)**가
+  병목이고, 에이전트는 매 라운드 `시스템 프롬프트+대화기록+도구 5개 스키마`를 다시
+  처리한다. 그래서 ① 시스템 프롬프트·도구 description 을 짧게 유지(매 라운드 재처리분
+  절감) ② `options`로 `num_ctx`(KV 캐시 과대 할당 방지)·`num_predict`(생성 길이 캡)·
+  `num_thread`를 건다(`OLLAMA_NUM_*` 환경변수로 조정). 도구 description 을 더 줄일 땐
+  트리거 문구를 남겨야 모델의 도구 선택 품질이 유지된다.
+  **호스트 Ollama 쪽 추가 가속(코드 밖):** `ollama serve` 를 띄울 때
+  `OLLAMA_FLASH_ATTENTION=1`(어텐션 가속), `OLLAMA_KV_CACHE_TYPE=q8_0`(KV 캐시 양자화,
+  flash attention 필요)을 주면 더 빨라진다. 발열 스로틀이 걸리면 클럭이 떨어져
+  급격히 느려지므로 `/status`의 throttle 이력부터 확인할 것.
 - **Ollama는 컨테이너가 아니라 호스트에서 직접 구동.** 봇 컨테이너는
   `host.docker.internal`(또는 `network_mode: host` 시 `127.0.0.1`)로 접속한다.
   호스트 Ollama는 `OLLAMA_HOST=0.0.0.0 ollama serve`로 띄워야 컨테이너에서 보인다.
@@ -90,6 +100,9 @@
 | `TELEGRAM_TOKEN` | ✅ | — | @BotFather 봇 토큰. `.env`로 주입 |
 | `OLLAMA_URL` | | `http://127.0.0.1:11434/api/chat` | Ollama chat 엔드포인트 |
 | `OLLAMA_MODEL` | | `qwen3:4b` | 사용할 모델 |
+| `OLLAMA_NUM_CTX` | | `4096` | 컨텍스트 길이. 모델 기본이 과하면 KV 캐시 연산·메모리가 커져 느려짐 → 명시 고정 |
+| `OLLAMA_NUM_PREDICT` | | `1024` | 생성 토큰 상한. 답이 장황하게 늘어지는 걸 막아 생성 시간 캡 |
+| `OLLAMA_NUM_THREAD` | | `0` | 추론 스레드 수. 0=Ollama 자동(보통 물리 코어 수) |
 | `ALLOWED_CHAT_IDS` | | (빈 값) | 허용할 chat_id 콤마 목록. 비면 전체 허용 |
 | `WEBHOOK_SECRET` | | (빈 값) | 웹훅 비밀 토큰. `setWebhook`의 `secret_token`과 동일 값. 설정 시 `X-Telegram-Bot-Api-Secret-Token` 헤더 불일치 요청을 403 거절. 비면 검증 안 함 |
 | `TAVILY_API_KEY` | | (빈 값) | Tavily 검색 키. 있으면 Tavily, 없으면 DuckDuckGo |

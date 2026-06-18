@@ -33,6 +33,22 @@ ALLOWED_CHAT_IDS = {
 # 일치하지 않는 요청(=텔레그램이 보낸 게 아닌 직접 호출)은 거절한다. 비면 검증 안 함.
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+# Ollama 추론 옵션(저사양 파이 속도 튜닝).
+# - num_ctx: 컨텍스트 길이. 모델 기본이 과하면 KV 캐시 연산/메모리가 커지므로 명시 고정.
+# - num_predict: 생성 토큰 상한. 모델이 장황하게 늘어지는 걸 막아 생성 시간을 캡.
+# - num_thread: 사용할 스레드 수. 0이면 Ollama 자동(보통 물리 코어 수).
+OLLAMA_NUM_CTX = _int_env("OLLAMA_NUM_CTX", 4096)
+OLLAMA_NUM_PREDICT = _int_env("OLLAMA_NUM_PREDICT", 1024)
+OLLAMA_NUM_THREAD = _int_env("OLLAMA_NUM_THREAD", 0)
+
 HELP_TEXT = (
     "🤖 사용 방법\n\n"
     "• 그냥 질문하세요 — 필요하면 봇이 알아서 웹 검색·뉴스를 찾아 답해요.\n"
@@ -81,13 +97,11 @@ def sys_msg() -> dict:
     return {
         "role": "system",
         "content": (
-            f"너는 한국어로 답하는 텔레그램 봇 비서야. 현재 한국 시각은 {current_kst()}야. "
-            "'오늘'·'어제'·'지금' 같은 표현은 반드시 이 시각을 기준으로 해석해라.\n"
-            "너의 학습 지식은 과거 시점에 멈춰 있어 최신 사건을 모른다. "
-            "날짜·뉴스·스포츠 경기 결과·시세·날씨처럼 시간에 따라 변하는 정보는, "
-            "네 기억으로 추측하거나 '존재하지 않는다/아직 시작되지 않았다'고 단정하지 마라. "
-            "그런 질문은 반드시 web_search 도구로 먼저 확인하고, "
-            "제공된 검색 결과에 있는 사실에만 근거해서 답해라."
+            f"너는 한국어로 답하는 텔레그램 봇 비서야. 현재 한국 시각은 {current_kst()}. "
+            "'오늘·어제·지금'은 이 시각 기준으로 해석해라. "
+            "네 학습 지식은 과거에 멈춰 있으니, 날짜·뉴스·스포츠 결과·시세·날씨처럼 "
+            "변하는 정보는 추측하거나 '없다/아직 안 했다'고 단정하지 말고 "
+            "반드시 web_search 로 확인한 결과에만 근거해 답해라."
         ),
     }
 
@@ -99,6 +113,9 @@ async def health():
 
 async def ollama_call(messages: list[dict], tools: list | None = None) -> dict:
     """Ollama /api/chat 호출 후 message 객체(dict) 반환. tools 주면 도구 사용 허용."""
+    options = {"num_ctx": OLLAMA_NUM_CTX, "num_predict": OLLAMA_NUM_PREDICT}
+    if OLLAMA_NUM_THREAD > 0:
+        options["num_thread"] = OLLAMA_NUM_THREAD
     payload = {
         "model": OLLAMA_MODEL,
         "messages": messages,
@@ -108,6 +125,7 @@ async def ollama_call(messages: list[dict], tools: list | None = None) -> dict:
         "think": False,
         # 모델을 메모리에 유지해 매 요청마다 재로딩하지 않도록 함
         "keep_alive": "30m",
+        "options": options,
     }
     if tools:
         payload["tools"] = tools
@@ -128,10 +146,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": (
-                "최신 정보나 사실 확인이 필요할 때 웹을 검색한다. "
-                "시세·환율·날씨·최근 사건 등 학습 시점 이후의 정보에 사용."
-            ),
+            "description": "최신 정보·사실 확인용 웹 검색. 시세·환율·날씨·최근 사건 등 학습 이후 정보에 사용.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -159,9 +174,8 @@ TOOLS = [
         "function": {
             "name": "get_status",
             "description": (
-                "이 봇이 돌아가는 서버(라즈베리파이)의 현재 상태를 확인한다. "
-                "CPU 온도·사용률·부하·메모리·디스크·전원(저전압/스로틀)·가동시간·Ollama 상태를 반환. "
-                "'서버 괜찮아?', '온도 몇 도야?', '전원 괜찮아?', '메모리 얼마나 써?' 같은 질문에 사용."
+                "봇이 도는 라즈베리파이 상태(온도·CPU·부하·메모리·디스크·전원·가동시간·Ollama). "
+                "'서버 괜찮아?','온도 몇 도야?','메모리 얼마나 써?' 같은 질문에 사용."
             ),
             "parameters": {"type": "object", "properties": {}},
         },
@@ -170,10 +184,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_aircon_configs",
-            "description": (
-                "에어컨에서 사용 가능한 설정(모드·온도·전원 조합) 목록을 가져온다. "
-                "어떤 모드나 온도를 쓸 수 있는지 모를 때, 에어컨을 켜기 전에 확인용으로 사용."
-            ),
+            "description": "에어컨에서 쓸 수 있는 설정(모드·온도·전원) 목록. 켜기 전 값 확인용.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -182,11 +193,9 @@ TOOLS = [
         "function": {
             "name": "control_aircon",
             "description": (
-                "에어컨을 켜거나 끄거나 모드·온도를 바꾼다. '에어컨 켜줘', '26도로 해줘', "
-                "'에어컨 꺼줘' 같은 요청에 사용. "
-                "켤 때는 mode·temp·power='on' 을 모두 지정한다(온도를 빼면 임의 온도가 잡힘). "
-                "끌 때는 power='off' 만 주면 된다(온도 불필요). "
-                "사용 가능한 mode·온도 값을 모르면 먼저 list_aircon_configs 로 확인한다."
+                "에어컨 켜기/끄기/온도 변경('에어컨 켜줘','26도로 해줘','에어컨 꺼줘'). "
+                "켤 땐 mode·temp·power='on' 모두 지정(온도 빼면 임의 온도), 끌 땐 power='off'만. "
+                "모르는 mode·온도 값은 먼저 list_aircon_configs 로 확인."
             ),
             "parameters": {
                 "type": "object",
