@@ -1,7 +1,6 @@
 import os
 import json
 import logging
-from collections import defaultdict, deque
 from datetime import datetime, timezone, timedelta
 
 import httpx
@@ -51,14 +50,12 @@ OLLAMA_NUM_THREAD = _int_env("OLLAMA_NUM_THREAD", 0)
 
 HELP_TEXT = (
     "🤖 사용 방법\n\n"
-    "• 그냥 질문하세요 — 필요하면 봇이 알아서 웹 검색·뉴스를 찾아 답해요.\n"
-    "  (최근 10턴까지 대화 맥락을 기억합니다.)\n\n"
+    "• 그냥 질문하세요 — 필요하면 봇이 알아서 웹 검색·뉴스를 찾아 답해요.\n\n"
     "강제로 쓰고 싶을 때 쓰는 명령어:\n"
     "• /news, /news <키워드> — 뉴스 요약 (예: /news AI)\n"
     "• /search <질문> — 웹 검색 후 답변 (예: /search 오늘 환율)\n"
     "• /status — 서버(라즈베리파이) 상태 확인 (온도·전원·CPU·메모리·디스크)\n"
     "• /ac on <모드> <온도> | /ac off | /ac list — 에어컨 제어 (예: /ac on 냉방 25)\n"
-    "• /reset — 대화 기록 초기화\n"
     "• /help — 이 도움말 보기"
 )
 
@@ -70,12 +67,6 @@ AC_HELP = (
     "• /ac <라벨> — 라벨로 직접 송신 (예: /ac 냉방_25_on)\n\n"
     "그냥 '에어컨 켜줘'처럼 말해도 봇이 알아서 제어해요."
 )
-
-# 대화 기록: chat_id -> 최근 메시지들 (user/assistant 합쳐서 최대 MAX_MESSAGES 개)
-# 10턴 = user 10 + assistant 10 = 20개
-MAX_TURNS = 10
-MAX_MESSAGES = MAX_TURNS * 2
-histories: dict[int, deque] = defaultdict(lambda: deque(maxlen=MAX_MESSAGES))
 
 # LLM 추론은 오래 걸릴 수 있으므로 읽기 타임아웃 없음(연결만 10초 제한)
 client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0))
@@ -97,11 +88,13 @@ def sys_msg() -> dict:
     return {
         "role": "system",
         "content": (
-            f"너는 한국어로 답하는 텔레그램 봇 비서야. 현재 한국 시각은 {current_kst()}. "
-            "'오늘·어제·지금'은 이 시각 기준으로 해석해라. "
-            "네 학습 지식은 과거에 멈춰 있으니, 날짜·뉴스·스포츠 결과·시세·날씨처럼 "
-            "변하는 정보는 추측하거나 '없다/아직 안 했다'고 단정하지 말고 "
-            "반드시 web_search 로 확인한 결과에만 근거해 답해라."
+            f"너는 한국어로 답하는 텔레그램 봇 비서야. 현재 한국 시각은 {current_kst()}야. "
+            "'오늘'·'어제'·'지금' 같은 표현은 반드시 이 시각을 기준으로 해석해라.\n"
+            "너의 학습 지식은 과거 시점에 멈춰 있어 최신 사건을 모른다. "
+            "날짜·뉴스·스포츠 경기 결과·시세·날씨처럼 시간에 따라 변하는 정보는, "
+            "네 기억으로 추측하거나 '존재하지 않는다/아직 시작되지 않았다'고 단정하지 마라. "
+            "그런 질문은 반드시 web_search 도구로 먼저 확인하고, "
+            "제공된 검색 결과에 있는 사실에만 근거해서 답해라."
         ),
     }
 
@@ -146,7 +139,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "최신 정보·사실 확인용 웹 검색. 시세·환율·날씨·최근 사건 등 학습 이후 정보에 사용.",
+            "description": (
+                "최신 정보나 사실 확인이 필요할 때 웹을 검색한다. "
+                "시세·환율·날씨·최근 사건 등 학습 시점 이후의 정보에 사용."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -174,8 +170,9 @@ TOOLS = [
         "function": {
             "name": "get_status",
             "description": (
-                "봇이 도는 라즈베리파이 상태(온도·CPU·부하·메모리·디스크·전원·가동시간·Ollama). "
-                "'서버 괜찮아?','온도 몇 도야?','메모리 얼마나 써?' 같은 질문에 사용."
+                "이 봇이 돌아가는 서버(라즈베리파이)의 현재 상태를 확인한다. "
+                "CPU 온도·사용률·부하·메모리·디스크·전원(저전압/스로틀)·가동시간·Ollama 상태를 반환. "
+                "'서버 괜찮아?', '온도 몇 도야?', '전원 괜찮아?', '메모리 얼마나 써?' 같은 질문에 사용."
             ),
             "parameters": {"type": "object", "properties": {}},
         },
@@ -184,7 +181,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_aircon_configs",
-            "description": "에어컨에서 쓸 수 있는 설정(모드·온도·전원) 목록. 켜기 전 값 확인용.",
+            "description": (
+                "에어컨에서 사용 가능한 설정(모드·온도·전원 조합) 목록을 가져온다. "
+                "어떤 모드나 온도를 쓸 수 있는지 모를 때, 에어컨을 켜기 전에 확인용으로 사용."
+            ),
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -193,9 +193,11 @@ TOOLS = [
         "function": {
             "name": "control_aircon",
             "description": (
-                "에어컨 켜기/끄기/온도 변경('에어컨 켜줘','26도로 해줘','에어컨 꺼줘'). "
-                "켤 땐 mode·temp·power='on' 모두 지정(온도 빼면 임의 온도), 끌 땐 power='off'만. "
-                "모르는 mode·온도 값은 먼저 list_aircon_configs 로 확인."
+                "에어컨을 켜거나 끄거나 모드·온도를 바꾼다. '에어컨 켜줘', '26도로 해줘', "
+                "'에어컨 꺼줘' 같은 요청에 사용. "
+                "켤 때는 mode·temp·power='on' 을 모두 지정한다(온도를 빼면 임의 온도가 잡힘). "
+                "끌 때는 power='off' 만 주면 된다(온도 불필요). "
+                "사용 가능한 mode·온도 값을 모르면 먼저 list_aircon_configs 로 확인한다."
             ),
             "parameters": {
                 "type": "object",
@@ -308,23 +310,14 @@ async def send_message(chat_id: int, text: str):
 
 
 async def process_message(text: str, chat_id: int):
-    """일반 대화: Ollama 대화 생성 + 텔레그램 전송. 백그라운드 실행."""
-    history = histories[chat_id]
-
-    # 이번 사용자 발화를 기록에 추가하고, 윈도우(최근 N턴) 전체를 모델에 전달
-    history.append({"role": "user", "content": text})
-
+    """일반 대화: Ollama 답변 생성 + 텔레그램 전송. 백그라운드 실행.
+    무상태(stateless) — 이전 대화를 저장하거나 함께 보내지 않고, 매 요청을 독립 처리한다."""
     try:
-        # 에이전트 루프: 모델이 필요하다고 판단하면 web_search/get_news 를 스스로 호출
-        # 시스템 메시지(현재 시각)는 매 턴 새로 앞에 붙이고 기록엔 저장하지 않음
-        answer = await run_agent([sys_msg()] + list(history), chat_id)
-        # 최종 답변만 기록에 남김(도구 왕복 메시지는 저장하지 않아 윈도우를 아낌)
-        history.append({"role": "assistant", "content": answer})
+        # 에이전트 루프: 모델이 필요하다고 판단하면 web_search/get_news 등을 스스로 호출
+        # 시스템 메시지(현재 시각)만 앞에 붙이고 이번 발화만 전달(이전 대화 미포함)
+        answer = await run_agent([sys_msg(), {"role": "user", "content": text}], chat_id)
     except Exception:  # noqa: BLE001
         logger.exception("Ollama 호출 실패")
-        # 실패한 사용자 발화는 기록에서 되돌림(반쪽짜리 맥락 방지)
-        if history and history[-1]["role"] == "user":
-            history.pop()
         answer = "⚠️ 답변 생성 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요."
 
     await send_message(chat_id, answer)
@@ -457,12 +450,6 @@ async def telegram(request: Request, background_tasks: BackgroundTasks):
     # /help, /start — 사용 가능한 명령어 안내
     if text in ("/help", "/start"):
         background_tasks.add_task(send_message, chat_id, HELP_TEXT)
-        return {"ok": True}
-
-    # /reset 으로 대화 기록 초기화
-    if text == "/reset":
-        histories.pop(chat_id, None)
-        background_tasks.add_task(send_message, chat_id, "🧹 대화 기록을 초기화했어요.")
         return {"ok": True}
 
     # /status — 서버(라즈베리파이) 상태 확인. LLM 없이 즉시 응답.
