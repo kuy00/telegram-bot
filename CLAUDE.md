@@ -41,6 +41,11 @@
   날씨·스코어 등 구체 사실에 강함), 없으면 DuckDuckGo(`ddgs`, 스니펫만)로 폴백.
   `search(client, query)` → `{"answer", "results":[{title,url,content}]}` 반환.
   Tavily 호출 실패 시에도 ddgs로 폴백한다. `MAX_RESULTS`(기본 5)개.
+- **`aircon.py`** — 에어컨 IR 제어 서버(`ir_server`, LAN 전용 JSON API) 연동.
+  `list_configs(client)` → 송신 가능한 설정 목록, `send(client, mode/temp/power/label)`
+  → IR 송신. 켤 땐 mode·temp·power 전체 지정 권장(온도 생략 시 임의 온도), 끌 땐
+  `power="off"`만으로 충분. `IR_HTTP_TOKEN` 있으면 Bearer 인증. 서버가 준 에러는
+  `ValueError(메시지)`로 올려 사용자에게 그대로 보여준다.
 
 ## 핵심 설계 결정 (수정 시 주의)
 
@@ -50,8 +55,9 @@
 - **`httpx.AsyncClient`의 read 타임아웃은 `None`**(connect만 10초). 저사양에서
   LLM 생성이 수십 초 걸려도 끊기지 않게 하기 위함.
 - **일반 대화는 에이전트(tool calling) 루프(`run_agent`)로 처리한다.** 모델이
-  필요하다고 판단하면 `web_search`/`get_news` 도구를 스스로 호출하고, 봇이 실행해
-  결과를 돌려준 뒤 최종 답을 낸다(ReAct). 무한 루프 방지로 `MAX_TOOL_ROUNDS`(3)회 제한.
+  필요하다고 판단하면 `web_search`/`get_news`/`get_status`/`list_aircon_configs`/
+  `control_aircon` 도구를 스스로 호출하고, 봇이 실행해 결과를 돌려준 뒤 최종 답을
+  낸다(ReAct). 무한 루프 방지로 `MAX_TOOL_ROUNDS`(3)회 제한.
   도구 결정 품질은 모델 크기에 의존적 — qwen3:4b 권장, 1.7b는 판단이 들쭉날쭉.
   `/news`·`/search` 수동 명령은 모델이 오판할 때의 강제 경로로 그대로 유지한다.
 - **대화 기록은 `chat_id`별 메모리(`deque(maxlen=20)`)**. 최근 10턴 슬라이딩 윈도우.
@@ -73,6 +79,7 @@
 | `/news [키워드]` | 뉴스 수집→요약 (수동) | `process_news` |
 | `/search <질문>`, `/ask <질문>` | 웹 검색→답변 | `process_search` |
 | `/status` | 서버 상태(온도·전원·CPU·메모리·디스크) | `process_status` |
+| `/ac on <모드> <온도>`, `/ac off`, `/ac list`, `/ac <라벨>` | 에어컨 IR 제어 (수동) | `process_ac` |
 | `/reset` | 대화 기록 초기화 | (인라인) |
 | `/help`, `/start` | 도움말 | (인라인, `HELP_TEXT`) |
 
@@ -87,6 +94,8 @@
 | `WEBHOOK_SECRET` | | (빈 값) | 웹훅 비밀 토큰. `setWebhook`의 `secret_token`과 동일 값. 설정 시 `X-Telegram-Bot-Api-Secret-Token` 헤더 불일치 요청을 403 거절. 비면 검증 안 함 |
 | `TAVILY_API_KEY` | | (빈 값) | Tavily 검색 키. 있으면 Tavily, 없으면 DuckDuckGo |
 | `DISK_PATH` | | `/` | `/status` 디스크 측정 경로. 호스트 루트 마운트 시 그 경로로 지정 |
+| `IR_SERVER_URL` | | `http://127.0.0.1:8000` | 에어컨 IR 제어 서버(ir_server) 주소. 봇이 같은 파이면 기본값 |
+| `IR_HTTP_TOKEN` | | (빈 값) | ir_server 인증 켰을 때 Bearer 토큰(서버의 동일 값). 비면 무인증 |
 
 ## 개발 / 실행
 

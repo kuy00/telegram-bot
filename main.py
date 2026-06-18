@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 import news
 import search
 import status
+import aircon
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("telegram-bot")
@@ -40,8 +41,18 @@ HELP_TEXT = (
     "• /news, /news <키워드> — 뉴스 요약 (예: /news AI)\n"
     "• /search <질문> — 웹 검색 후 답변 (예: /search 오늘 환율)\n"
     "• /status — 서버(라즈베리파이) 상태 확인 (온도·전원·CPU·메모리·디스크)\n"
+    "• /ac on <모드> <온도> | /ac off | /ac list — 에어컨 제어 (예: /ac on 냉방 25)\n"
     "• /reset — 대화 기록 초기화\n"
     "• /help — 이 도움말 보기"
+)
+
+AC_HELP = (
+    "❄️ 에어컨 제어\n\n"
+    "• /ac on <모드> <온도> — 켜기 (예: /ac on 냉방 25)\n"
+    "• /ac off — 끄기\n"
+    "• /ac list — 사용 가능한 설정 목록\n"
+    "• /ac <라벨> — 라벨로 직접 송신 (예: /ac 냉방_25_on)\n\n"
+    "그냥 '에어컨 켜줘'처럼 말해도 봇이 알아서 제어해요."
 )
 
 # 대화 기록: chat_id -> 최근 메시지들 (user/assistant 합쳐서 최대 MAX_MESSAGES 개)
@@ -155,6 +166,46 @@ TOOLS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_aircon_configs",
+            "description": (
+                "에어컨에서 사용 가능한 설정(모드·온도·전원 조합) 목록을 가져온다. "
+                "어떤 모드나 온도를 쓸 수 있는지 모를 때, 에어컨을 켜기 전에 확인용으로 사용."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "control_aircon",
+            "description": (
+                "에어컨을 켜거나 끄거나 모드·온도를 바꾼다. '에어컨 켜줘', '26도로 해줘', "
+                "'에어컨 꺼줘' 같은 요청에 사용. "
+                "켤 때는 mode·temp·power='on' 을 모두 지정한다(온도를 빼면 임의 온도가 잡힘). "
+                "끌 때는 power='off' 만 주면 된다(온도 불필요). "
+                "사용 가능한 mode·온도 값을 모르면 먼저 list_aircon_configs 로 확인한다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string", "description": "운전 모드 (예: 냉방, 난방)"},
+                    "temp": {"type": "integer", "description": "설정 온도(℃). 켤 때 필요"},
+                    "power": {
+                        "type": "string",
+                        "enum": ["on", "off"],
+                        "description": "전원 on/off",
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": "'모드_온도_전원' 형식 라벨로 직접 지정할 때 (예: 냉방_25_on)",
+                    },
+                },
+            },
+        },
+    },
 ]
 
 MAX_TOOL_ROUNDS = 3  # 무한 루프 방지: 도구 호출 왕복 횟수 제한
@@ -178,6 +229,34 @@ async def exec_tool(name: str, args: dict, chat_id: int) -> str:
     if name == "get_status":
         await send_message(chat_id, "🖥 서버 상태 확인 중...")
         return await status.report(client)
+    if name == "list_aircon_configs":
+        await send_message(chat_id, "❄️ 에어컨 설정 목록 확인 중...")
+        try:
+            configs = await aircon.list_configs(client)
+        except Exception:  # noqa: BLE001
+            logger.exception("에어컨 목록 조회 실패")
+            return "에어컨 서버에 연결하지 못했습니다."
+        if not configs:
+            return "사용 가능한 에어컨 설정이 없습니다."
+        return "사용 가능한 설정: " + ", ".join(c["label"] for c in configs)
+    if name == "control_aircon":
+        mode = (args.get("mode") or "").strip() or None
+        power = (args.get("power") or "").strip().lower() or None
+        label = (args.get("label") or "").strip() or None
+        temp = args.get("temp")
+        if isinstance(temp, str):  # 일부 모델은 숫자를 문자열로 반환
+            temp = int(temp) if temp.strip().lstrip("-").isdigit() else None
+        await send_message(chat_id, "❄️ 에어컨 제어 중...")
+        try:
+            result = await aircon.send(
+                client, mode=mode, temp=temp, power=power, label=label
+            )
+        except ValueError as e:  # 서버가 준 사용자용 에러 메시지
+            return f"에어컨 제어 실패: {e}"
+        except Exception:  # noqa: BLE001
+            logger.exception("에어컨 제어 오류")
+            return "에어컨 제어 중 오류가 발생했습니다."
+        return f"에어컨 송신 완료: {result.get('label')} ({result.get('source')})"
     return f"알 수 없는 도구: {name}"
 
 
@@ -287,6 +366,57 @@ async def process_status(chat_id: int):
     await send_message(chat_id, text)
 
 
+async def _ac_send(chat_id: int, **kwargs):
+    """에어컨 송신 공통부: 진행 안내 → 송신 → 결과/오류 전송."""
+    await send_message(chat_id, "❄️ 에어컨 제어 중...")
+    try:
+        result = await aircon.send(client, **kwargs)
+    except ValueError as e:  # 서버가 준 사용자용 에러 메시지
+        await send_message(chat_id, f"⚠️ 에어컨 제어 실패: {e}")
+        return
+    except Exception:  # noqa: BLE001
+        logger.exception("에어컨 제어 오류")
+        await send_message(chat_id, "⚠️ 에어컨 제어 중 오류가 발생했어요.")
+        return
+    await send_message(chat_id, f"✅ 송신 완료: {result.get('label')} ({result.get('source')})")
+
+
+async def process_ac(chat_id: int, arg: str):
+    """/ac: 에어컨 IR 제어(수동 강제 경로). LLM 을 거치지 않아 빠르고 확실하다."""
+    arg = arg.strip()
+    parts = arg.split()
+    sub = parts[0].lower() if parts else ""
+
+    if not arg or sub in ("help", "도움말"):
+        await send_message(chat_id, AC_HELP)
+        return
+    if sub in ("list", "목록"):
+        try:
+            configs = await aircon.list_configs(client)
+        except Exception:  # noqa: BLE001
+            logger.exception("에어컨 목록 조회 실패")
+            await send_message(chat_id, "⚠️ 에어컨 서버에 연결하지 못했어요.")
+            return
+        if not configs:
+            await send_message(chat_id, "사용 가능한 에어컨 설정이 없어요.")
+            return
+        lines = "\n".join(f"• {c['label']}" for c in configs)
+        await send_message(chat_id, f"❄️ 사용 가능한 에어컨 설정:\n{lines}")
+        return
+    if sub in ("off", "끄기", "꺼"):
+        await _ac_send(chat_id, power="off")
+        return
+    if sub in ("on", "켜기", "켜"):
+        # /ac on <모드> <온도>
+        if len(parts) < 3 or not parts[2].isdigit():
+            await send_message(chat_id, "켤 땐 모드와 온도를 함께 주세요. 예) /ac on 냉방 25")
+            return
+        await _ac_send(chat_id, mode=parts[1], temp=int(parts[2]), power="on")
+        return
+    # 그 외 한 단어는 라벨 직접 지정으로 간주 (예: /ac 냉방_25_on)
+    await _ac_send(chat_id, label=arg)
+
+
 @app.post("/telegram")
 async def telegram(request: Request, background_tasks: BackgroundTasks):
     # 비밀 토큰 검증: 설정돼 있으면 텔레그램이 붙인 헤더와 일치해야만 처리.
@@ -325,6 +455,12 @@ async def telegram(request: Request, background_tasks: BackgroundTasks):
     # /status — 서버(라즈베리파이) 상태 확인. LLM 없이 즉시 응답.
     if text == "/status":
         background_tasks.add_task(process_status, chat_id)
+        return {"ok": True}
+
+    # /ac — 에어컨 제어(수동). LLM 없이 ir_server 직접 호출.
+    if text == "/ac" or text.startswith("/ac "):
+        arg = text[len("/ac "):] if text.startswith("/ac ") else ""
+        background_tasks.add_task(process_ac, chat_id, arg)
         return {"ok": True}
 
     # /news [키워드] — 키워드 없으면 전체 주요 뉴스
