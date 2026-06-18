@@ -1,7 +1,6 @@
 import os
 import json
 import logging
-from collections import defaultdict, deque
 from datetime import datetime, timezone, timedelta
 
 import httpx
@@ -51,14 +50,12 @@ OLLAMA_NUM_THREAD = _int_env("OLLAMA_NUM_THREAD", 0)
 
 HELP_TEXT = (
     "🤖 사용 방법\n\n"
-    "• 그냥 질문하세요 — 필요하면 봇이 알아서 웹 검색·뉴스를 찾아 답해요.\n"
-    "  (최근 10턴까지 대화 맥락을 기억합니다.)\n\n"
+    "• 그냥 질문하세요 — 필요하면 봇이 알아서 웹 검색·뉴스를 찾아 답해요.\n\n"
     "강제로 쓰고 싶을 때 쓰는 명령어:\n"
     "• /news, /news <키워드> — 뉴스 요약 (예: /news AI)\n"
     "• /search <질문> — 웹 검색 후 답변 (예: /search 오늘 환율)\n"
     "• /status — 서버(라즈베리파이) 상태 확인 (온도·전원·CPU·메모리·디스크)\n"
     "• /ac on <모드> <온도> | /ac off | /ac list — 에어컨 제어 (예: /ac on 냉방 25)\n"
-    "• /reset — 대화 기록 초기화\n"
     "• /help — 이 도움말 보기"
 )
 
@@ -70,12 +67,6 @@ AC_HELP = (
     "• /ac <라벨> — 라벨로 직접 송신 (예: /ac 냉방_25_on)\n\n"
     "그냥 '에어컨 켜줘'처럼 말해도 봇이 알아서 제어해요."
 )
-
-# 대화 기록: chat_id -> 최근 메시지들 (user/assistant 합쳐서 최대 MAX_MESSAGES 개)
-# 10턴 = user 10 + assistant 10 = 20개
-MAX_TURNS = 10
-MAX_MESSAGES = MAX_TURNS * 2
-histories: dict[int, deque] = defaultdict(lambda: deque(maxlen=MAX_MESSAGES))
 
 # LLM 추론은 오래 걸릴 수 있으므로 읽기 타임아웃 없음(연결만 10초 제한)
 client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0))
@@ -319,23 +310,14 @@ async def send_message(chat_id: int, text: str):
 
 
 async def process_message(text: str, chat_id: int):
-    """일반 대화: Ollama 대화 생성 + 텔레그램 전송. 백그라운드 실행."""
-    history = histories[chat_id]
-
-    # 이번 사용자 발화를 기록에 추가하고, 윈도우(최근 N턴) 전체를 모델에 전달
-    history.append({"role": "user", "content": text})
-
+    """일반 대화: Ollama 답변 생성 + 텔레그램 전송. 백그라운드 실행.
+    무상태(stateless) — 이전 대화를 저장하거나 함께 보내지 않고, 매 요청을 독립 처리한다."""
     try:
-        # 에이전트 루프: 모델이 필요하다고 판단하면 web_search/get_news 를 스스로 호출
-        # 시스템 메시지(현재 시각)는 매 턴 새로 앞에 붙이고 기록엔 저장하지 않음
-        answer = await run_agent([sys_msg()] + list(history), chat_id)
-        # 최종 답변만 기록에 남김(도구 왕복 메시지는 저장하지 않아 윈도우를 아낌)
-        history.append({"role": "assistant", "content": answer})
+        # 에이전트 루프: 모델이 필요하다고 판단하면 web_search/get_news 등을 스스로 호출
+        # 시스템 메시지(현재 시각)만 앞에 붙이고 이번 발화만 전달(이전 대화 미포함)
+        answer = await run_agent([sys_msg(), {"role": "user", "content": text}], chat_id)
     except Exception:  # noqa: BLE001
         logger.exception("Ollama 호출 실패")
-        # 실패한 사용자 발화는 기록에서 되돌림(반쪽짜리 맥락 방지)
-        if history and history[-1]["role"] == "user":
-            history.pop()
         answer = "⚠️ 답변 생성 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요."
 
     await send_message(chat_id, answer)
@@ -468,12 +450,6 @@ async def telegram(request: Request, background_tasks: BackgroundTasks):
     # /help, /start — 사용 가능한 명령어 안내
     if text in ("/help", "/start"):
         background_tasks.add_task(send_message, chat_id, HELP_TEXT)
-        return {"ok": True}
-
-    # /reset 으로 대화 기록 초기화
-    if text == "/reset":
-        histories.pop(chat_id, None)
-        background_tasks.add_task(send_message, chat_id, "🧹 대화 기록을 초기화했어요.")
         return {"ok": True}
 
     # /status — 서버(라즈베리파이) 상태 확인. LLM 없이 즉시 응답.
