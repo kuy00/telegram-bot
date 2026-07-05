@@ -46,6 +46,13 @@
   → IR 송신. 켤 땐 mode·temp·power 전체 지정 권장(온도 생략 시 임의 온도), 끌 땐
   `power="off"`만으로 충분. `IR_HTTP_TOKEN` 있으면 Bearer 인증. 서버가 준 에러는
   `ValueError(메시지)`로 올려 사용자에게 그대로 보여준다.
+- **`scheduler.py`** — 지연 예약("30분 뒤에 에어컨 꺼줘"). 추가 의존성 없이
+  **인메모리 asyncio 태스크**(`asyncio.create_task`+`sleep`)로 구현. `parse(text)` →
+  자연어에서 `(지연_초, 실행할_내용)` 추출(상대 "N분 뒤"·절대 "3시에" 지원, 못 뽑으면
+  `None`), `schedule(chat_id, delay, action, callback)` → 예약 등록, `list_jobs`/
+  `cancel`/`cancel_all` → 조회·취소. 예약 시각이 되면 저장한 발화를 **`route_text` 로
+  다시 라우팅**해 실행한다(예약된 "에어컨 꺼줘"도 fast-path 직행).
+  **한계: 인메모리라 봇 재시작 시 예약이 사라진다**(영구화하려면 SQLite 등 필요).
 
 ## 핵심 설계 결정 (수정 시 주의)
 
@@ -56,7 +63,7 @@
   LLM 생성이 수십 초 걸려도 끊기지 않게 하기 위함.
 - **일반 대화는 에이전트(tool calling) 루프(`run_agent`)로 처리한다.** 모델이
   필요하다고 판단하면 `web_search`/`get_news`/`get_status`/`list_aircon_configs`/
-  `control_aircon` 도구를 스스로 호출하고, 봇이 실행해 결과를 돌려준 뒤 최종 답을
+  `control_aircon`/`schedule_action` 도구를 스스로 호출하고, 봇이 실행해 결과를 돌려준 뒤 최종 답을
   낸다(ReAct). 무한 루프 방지로 `MAX_TOOL_ROUNDS`(3)회 제한.
   도구 결정 품질은 모델 크기에 의존적 — qwen3:4b 권장, 1.7b는 판단이 들쭉날쭉.
   `/news`·`/search` 수동 명령은 모델이 오판할 때의 강제 경로로 그대로 유지한다.
@@ -64,6 +71,15 @@
   추론이 수십 초~수 분 걸려 "에어컨 꺼" 한마디도 느리기 때문. 웹훅에서 에이전트로
   넘기기 직전, `에어컨`+`꺼/끄/off`면 바로 `power=off`로 ir_server 직행(즉시 응답),
   켜기는 `냉방/난방`+온도가 분명할 때만 직행한다. 애매하면 `None` → 에이전트 경로.
+- **모든 발화 라우팅은 `route_text(text, chat_id)` 한 곳으로 모았다.** 웹훅은
+  검증(비밀 토큰·allowlist) 후 `route_text` 를 백그라운드 작업으로 넘길 뿐이다.
+  예약 실행(`run_scheduled`)도 같은 `route_text` 를 재사용하므로 명령·자연어·에어컨
+  fast-path 가 예약된 작업에도 동일하게 적용된다.
+- **지연 예약도 자연어 fast-path 로 먼저 가로챈다(`scheduler.parse`).** "30분 뒤에
+  에어컨 꺼줘"에서 `match_aircon` 이 먼저 걸리면 지연을 무시하고 **즉시** 꺼버리므로,
+  `route_text` 는 반드시 `scheduler.parse` → (예약) 를 `match_aircon` **앞에서** 검사한다.
+  파싱은 상대("N분/시간 뒤")·절대("3시에")를 지원하고 못 알아들으면 일반 대화로 흘려보낸다.
+  에이전트에도 `schedule_action` 도구가 있어 fast-path 가 놓친 표현은 LLM 이 예약할 수 있다.
 - **일반 대화는 무상태(stateless)다.** 이전 대화를 저장하지도, 컨텍스트로 함께
   보내지도 않는다. 매 요청은 `[sys_msg(), 이번 발화]`만으로 독립 처리된다(봇은
   앞 대화를 기억하지 않음). 저사양에서 프롬프트(prefill) 부담을 줄이려는 선택.
@@ -73,7 +89,7 @@
   thinking이 없는 모델(gemma3, exaone3.5 등)에선 이 옵션이 무시되므로 안전.
   `keep_alive: "30m"`로 모델을 메모리에 유지해 재로딩 지연도 줄인다.
 - **파이 추론 속도 튜닝.** CPU 추론은 답변 생성보다 **프롬프트 처리(prefill)**가
-  병목이고, 에이전트는 매 라운드 `시스템 프롬프트+대화기록+도구 5개 스키마`를 다시
+  병목이고, 에이전트는 매 라운드 `시스템 프롬프트+대화기록+도구 6개 스키마`를 다시
   처리한다. 그래서 ① 시스템 프롬프트·도구 description 을 짧게 유지(매 라운드 재처리분
   절감) ② `options`로 `num_ctx`(KV 캐시 과대 할당 방지)·`num_predict`(생성 길이 캡)·
   `num_thread`를 건다(`OLLAMA_NUM_*` 환경변수로 조정). 도구 description 을 더 줄일 땐
@@ -95,6 +111,7 @@
 | `/search <질문>`, `/ask <질문>` | 웹 검색→답변 | `process_search` |
 | `/status` | 서버 상태(온도·전원·CPU·메모리·디스크) | `process_status` |
 | `/ac on <모드> <온도>`, `/ac off`, `/ac list`, `/ac <라벨>` | 에어컨 IR 제어 (수동) | `process_ac` |
+| `/remind <시간> <할일>`, `/remind list`, `/remind cancel [번호]` | 지연 예약 (수동). 자연어 "30분 뒤 ~"도 동일 | `process_remind`→`scheduler` |
 | `/help`, `/start` | 도움말 | (인라인, `HELP_TEXT`) |
 
 ## 환경변수

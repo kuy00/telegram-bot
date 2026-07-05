@@ -11,6 +11,7 @@ import news
 import search
 import status
 import aircon
+import scheduler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("telegram-bot")
@@ -57,7 +58,18 @@ HELP_TEXT = (
     "• /search <질문> — 웹 검색 후 답변 (예: /search 오늘 환율)\n"
     "• /status — 서버(라즈베리파이) 상태 확인 (온도·전원·CPU·메모리·디스크)\n"
     "• /ac on <모드> <온도> | /ac off | /ac list — 에어컨 제어 (예: /ac on 냉방 25)\n"
-    "• /help — 이 도움말 보기"
+    "• /remind <시간> <할일> | /remind list | /remind cancel <번호> — 예약 (예: /remind 30분 뒤 에어컨 꺼줘)\n"
+    "• /help — 이 도움말 보기\n\n"
+    "'30분 뒤에 에어컨 꺼줘'처럼 말해도 알아서 예약해요."
+)
+
+REMIND_HELP = (
+    "⏰ 예약\n\n"
+    "• /remind <시간> <할일> — 예약 (예: /remind 30분 뒤 에어컨 꺼줘, /remind 오후 3시에 뉴스 알려줘)\n"
+    "• /remind list — 예약 목록 보기\n"
+    "• /remind cancel <번호> — 예약 취소 (번호 없으면 전체 취소)\n\n"
+    "명령어 없이 '1시간 뒤에 ~해줘'처럼 말해도 예약돼요.\n"
+    "※ 예약은 봇 재시작 시 사라집니다."
 )
 
 AC_HELP = (
@@ -218,6 +230,25 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "schedule_action",
+            "description": (
+                "'30분 뒤에 ~해줘', '이따 3시에 ~해줘'처럼 나중에 실행할 작업을 예약한다. "
+                "delay_seconds(초) 뒤에 action 내용을 실행. 예: 30분 뒤 에어컨 끄기 → "
+                "delay_seconds=1800, action='에어컨 꺼줘'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "delay_seconds": {"type": "integer", "description": "몇 초 뒤에 실행할지"},
+                    "action": {"type": "string", "description": "실행할 내용 (예: 에어컨 꺼줘)"},
+                },
+                "required": ["delay_seconds", "action"],
+            },
+        },
+    },
 ]
 
 MAX_TOOL_ROUNDS = 3  # 무한 루프 방지: 도구 호출 왕복 횟수 제한
@@ -273,6 +304,18 @@ async def exec_tool(name: str, args: dict, chat_id: int) -> str:
         if power == "off" or str(result.get("label", "")).endswith("_off"):
             return "에어컨을 껐습니다."
         return f"에어컨 송신 완료: {result.get('label')}"
+    if name == "schedule_action":
+        delay = args.get("delay_seconds")
+        if isinstance(delay, str):  # 일부 모델은 숫자를 문자열로 반환
+            delay = int(delay) if delay.strip().lstrip("-").isdigit() else None
+        action = (args.get("action") or "").strip()
+        if not action or not isinstance(delay, int) or delay <= 0:
+            return "예약할 시간과 내용을 정확히 알려주세요."
+        if delay > scheduler.MAX_DELAY:
+            return "예약은 최대 7일까지 가능합니다."
+        job = scheduler.schedule(chat_id, delay, action, run_scheduled)
+        when = job.fire_at.strftime("%H:%M")
+        return f"{scheduler.humanize_delay(delay)} 뒤 {when}에 '{action}' 실행하도록 예약했습니다 (#{job.id})."
     return f"알 수 없는 도구: {name}"
 
 
@@ -447,6 +490,139 @@ async def process_ac(chat_id: int, arg: str):
     await _ac_send(chat_id, label=arg)
 
 
+# ── 예약(reservation) ────────────────────────────────────────────────────────
+async def run_scheduled(chat_id: int, action: str):
+    """예약 시간이 되면 호출된다. 저장해 둔 발화를 그대로 다시 라우팅해 실행한다."""
+    await send_message(chat_id, f"⏰ 예약한 '{action}' 실행할게요.")
+    try:
+        await route_text(action, chat_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("예약 작업 실행 실패")
+        await send_message(chat_id, "⚠️ 예약 작업 실행 중 오류가 발생했어요.")
+
+
+async def schedule_and_confirm(chat_id: int, delay: float, action: str):
+    """지연/내용 검증 후 예약을 걸고 확인 메시지를 보낸다."""
+    if delay <= 0:
+        await send_message(chat_id, "예약 시간이 올바르지 않아요.")
+        return
+    if delay > scheduler.MAX_DELAY:
+        await send_message(chat_id, f"예약은 최대 {scheduler.MAX_DELAY // 86400}일까지 가능해요.")
+        return
+    job = scheduler.schedule(chat_id, delay, action, run_scheduled)
+    when = job.fire_at.strftime("%m/%d %H:%M")
+    await send_message(
+        chat_id,
+        f"⏰ 예약 완료 (#{job.id})\n"
+        f"{scheduler.humanize_delay(delay)} 뒤({when})에 '{action}' 실행할게요.\n"
+        f"취소: /remind cancel {job.id}",
+    )
+
+
+async def process_remind(chat_id: int, arg: str):
+    """/remind: 예약 걸기·목록·취소(수동 명령). 자연어도 그대로 파싱한다."""
+    arg = arg.strip()
+    parts = arg.split()
+    sub = parts[0].lower() if parts else ""
+
+    if not arg or sub in ("help", "도움말"):
+        await send_message(chat_id, REMIND_HELP)
+        return
+    if sub in ("list", "목록"):
+        jobs = scheduler.list_jobs(chat_id)
+        if not jobs:
+            await send_message(chat_id, "예약된 작업이 없어요.")
+            return
+        lines = "\n".join(
+            f"#{j.id} · {j.fire_at.strftime('%m/%d %H:%M')} · {j.action_text}" for j in jobs
+        )
+        await send_message(chat_id, f"⏰ 예약된 작업:\n{lines}")
+        return
+    if sub in ("cancel", "취소", "삭제"):
+        if len(parts) < 2:  # 번호 없으면 전체 취소
+            n = scheduler.cancel_all(chat_id)
+            await send_message(chat_id, f"예약 {n}건을 취소했어요." if n else "취소할 예약이 없어요.")
+            return
+        try:
+            jid = int(parts[1].lstrip("#"))
+        except ValueError:
+            await send_message(chat_id, "취소할 예약 번호를 숫자로 주세요. 예) /remind cancel 3")
+            return
+        ok = scheduler.cancel(chat_id, jid)
+        await send_message(chat_id, f"예약 #{jid} 취소했어요." if ok else f"예약 #{jid} 를 찾지 못했어요.")
+        return
+
+    # 그 외: 자연어 예약으로 파싱 (예: /remind 30분 뒤 에어컨 꺼줘)
+    parsed = scheduler.parse(arg)
+    if parsed is None:
+        await send_message(chat_id, "시간을 알아듣지 못했어요. 예) /remind 30분 뒤 에어컨 꺼줘")
+        return
+    delay, action = parsed
+    await schedule_and_confirm(chat_id, delay, action)
+
+
+async def route_text(text: str, chat_id: int):
+    """발화 하나를 알맞은 처리기로 라우팅한다(모두 await). 웹훅의 백그라운드
+    작업으로도, 예약 실행(run_scheduled)에서도 재사용한다."""
+    # /help, /start — 사용 가능한 명령어 안내
+    if text in ("/help", "/start"):
+        await send_message(chat_id, HELP_TEXT)
+        return
+
+    # /status — 서버(라즈베리파이) 상태 확인. LLM 없이 즉시 응답.
+    if text == "/status":
+        await process_status(chat_id)
+        return
+
+    # /ac — 에어컨 제어(수동). LLM 없이 ir_server 직접 호출.
+    if text == "/ac" or text.startswith("/ac "):
+        arg = text[len("/ac "):] if text.startswith("/ac ") else ""
+        await process_ac(chat_id, arg)
+        return
+
+    # /remind — 예약(수동). LLM 없이 시간 파싱 후 예약.
+    if text in ("/remind", "/예약") or text.startswith("/remind ") or text.startswith("/예약 "):
+        arg = text.split(" ", 1)[1] if " " in text else ""
+        await process_remind(chat_id, arg)
+        return
+
+    # /news [키워드] — 키워드 없으면 전체 주요 뉴스
+    if text == "/news" or text.startswith("/news "):
+        keyword = text[len("/news "):].strip() if text.startswith("/news ") else None
+        await process_news(chat_id, keyword or None)
+        return
+
+    # /search <질문> — 웹 검색 후 답변
+    if text.startswith("/search ") or text.startswith("/ask "):
+        query = text.split(" ", 1)[1].strip()
+        if query:
+            await process_search(chat_id, query)
+        else:
+            await send_message(chat_id, "검색어를 함께 보내주세요. 예) /search 오늘 환율")
+        return
+    if text in ("/search", "/ask"):
+        await send_message(chat_id, "검색어를 함께 보내주세요. 예) /search 오늘 환율")
+        return
+
+    # 자연어 예약: "30분 뒤에 에어컨 꺼줘" 등. **에어컨 매칭보다 먼저** 검사해야
+    # '에어컨 꺼줘'가 즉시 실행되는 걸 막는다(안 그러면 지연이 무시됨).
+    parsed = scheduler.parse(text)
+    if parsed is not None:
+        delay, action = parsed
+        await schedule_and_confirm(chat_id, delay, action)
+        return
+
+    # 명백한 에어컨 켜기/끄기는 LLM 추론(파이에서 수십 초~수 분)을 건너뛰고
+    # ir_server 로 직행해 즉시 응답한다. 애매하면 None → 아래 에이전트 경로로.
+    ac_kwargs = match_aircon(text)
+    if ac_kwargs is not None:
+        await _ac_send(chat_id, **ac_kwargs)
+        return
+
+    # 일반 대화(에이전트 루프)
+    await process_message(text, chat_id)
+
+
 @app.post("/telegram")
 async def telegram(request: Request, background_tasks: BackgroundTasks):
     # 비밀 토큰 검증: 설정돼 있으면 텔레그램이 붙인 헤더와 일치해야만 처리.
@@ -471,50 +647,9 @@ async def telegram(request: Request, background_tasks: BackgroundTasks):
         logger.info("허용되지 않은 chat_id 무시: %s", chat_id)
         return {"ok": True}
 
-    # /help, /start — 사용 가능한 명령어 안내
-    if text in ("/help", "/start"):
-        background_tasks.add_task(send_message, chat_id, HELP_TEXT)
-        return {"ok": True}
-
-    # /status — 서버(라즈베리파이) 상태 확인. LLM 없이 즉시 응답.
-    if text == "/status":
-        background_tasks.add_task(process_status, chat_id)
-        return {"ok": True}
-
-    # /ac — 에어컨 제어(수동). LLM 없이 ir_server 직접 호출.
-    if text == "/ac" or text.startswith("/ac "):
-        arg = text[len("/ac "):] if text.startswith("/ac ") else ""
-        background_tasks.add_task(process_ac, chat_id, arg)
-        return {"ok": True}
-
-    # /news [키워드] — 키워드 없으면 전체 주요 뉴스
-    if text == "/news" or text.startswith("/news "):
-        keyword = text[len("/news "):].strip() if text.startswith("/news ") else None
-        background_tasks.add_task(process_news, chat_id, keyword or None)
-        return {"ok": True}
-
-    # /search <질문> — 웹 검색 후 답변
-    if text.startswith("/search ") or text.startswith("/ask "):
-        query = text.split(" ", 1)[1].strip()
-        if query:
-            background_tasks.add_task(process_search, chat_id, query)
-        else:
-            background_tasks.add_task(send_message, chat_id, "검색어를 함께 보내주세요. 예) /search 오늘 환율")
-        return {"ok": True}
-    if text in ("/search", "/ask"):
-        background_tasks.add_task(send_message, chat_id, "검색어를 함께 보내주세요. 예) /search 오늘 환율")
-        return {"ok": True}
-
-    # 명백한 에어컨 켜기/끄기는 LLM 추론(파이에서 수십 초~수 분)을 건너뛰고
-    # ir_server 로 직행해 즉시 응답한다. 애매하면 None → 아래 에이전트 경로로.
-    ac_kwargs = match_aircon(text)
-    if ac_kwargs is not None:
-        background_tasks.add_task(_ac_send, chat_id, **ac_kwargs)
-        return {"ok": True}
-
-    # 일반 대화: 생성은 백그라운드로, 텔레그램에는 즉시 200 응답
+    # 실제 처리는 백그라운드로, 텔레그램에는 즉시 200 응답
     # (오래 끌면 텔레그램이 같은 업데이트를 재전송 → 중복/폭주 발생)
-    background_tasks.add_task(process_message, text, chat_id)
+    background_tasks.add_task(route_text, text, chat_id)
     return {"ok": True}
 
 
