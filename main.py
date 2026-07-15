@@ -1,5 +1,4 @@
 import os
-import re
 import json
 import logging
 from datetime import datetime, timezone, timedelta
@@ -207,15 +206,20 @@ TOOLS = [
             "name": "control_aircon",
             "description": (
                 "에어컨을 켜거나 끄거나 모드·온도를 바꾼다. '에어컨 켜줘', '26도로 해줘', "
-                "'에어컨 꺼줘' 같은 요청에 사용. "
+                "'제습으로 켜줘', '에어컨 꺼줘' 같은 요청에 사용. "
                 "켤 때는 mode·temp·power='on' 을 모두 지정한다(온도를 빼면 임의 온도가 잡힘). "
+                "'제습'·'송풍' 요청이면 mode 를 반드시 그대로 쓰고 냉방으로 바꾸지 마라. "
                 "끌 때는 power='off' 만 주면 된다(온도 불필요). "
                 "사용 가능한 mode·온도 값을 모르면 먼저 list_aircon_configs 로 확인한다."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "mode": {"type": "string", "description": "운전 모드 (예: 냉방, 난방)"},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["냉방", "난방", "제습", "송풍"],
+                        "description": "운전 모드 (냉방/난방/제습/송풍)",
+                    },
                     "temp": {"type": "integer", "description": "설정 온도(℃). 켤 때 필요"},
                     "power": {
                         "type": "string",
@@ -235,9 +239,10 @@ TOOLS = [
         "function": {
             "name": "schedule_action",
             "description": (
-                "'30분 뒤에 ~해줘', '이따 3시에 ~해줘'처럼 나중에 실행할 작업을 예약한다. "
-                "delay_seconds(초) 뒤에 action 내용을 실행. 예: 30분 뒤 에어컨 끄기 → "
-                "delay_seconds=1800, action='에어컨 꺼줘'."
+                "'30분 뒤에 ~해줘', '한 시간 뒤에 ~해줘', '이따 3시에 ~해줘'처럼 나중에 "
+                "실행할 작업을 예약한다. delay_seconds(초) 뒤에 action 내용을 실행. "
+                "예: 30분 뒤 에어컨 끄기 → delay_seconds=1800, action='에어컨 꺼줘'. "
+                "예: 한 시간 뒤 → delay_seconds=3600."
             ),
             "parameters": {
                 "type": "object",
@@ -435,25 +440,6 @@ async def _ac_send(chat_id: int, **kwargs):
         await send_message(chat_id, f"✅ 송신 완료: {result.get('label')}")
 
 
-# 명백한 에어컨 켜기/끄기 발화는 LLM(수십 초~수 분)을 건너뛰고 바로 ir_server 로
-# 보내 즉시 응답한다. 모드·온도가 애매한 켜기는 None 을 돌려 에이전트 경로로 넘긴다.
-def match_aircon(text: str) -> dict | None:
-    t = text.replace(" ", "")
-    if "에어컨" not in t and "에어콘" not in t:
-        return None
-    # 끄기: 흔하고 모호하지 않음
-    if any(k in t for k in ("꺼", "끄", "off", "오프")):
-        return {"power": "off"}
-    # 켜기: 모드+온도가 분명할 때만 지름길, 아니면 에이전트로
-    if any(k in t for k in ("켜", "틀", "on")):
-        mode = "냉방" if "냉방" in t else ("난방" if "난방" in t else None)
-        m = re.search(r"(\d{1,2})\s*도", t)
-        temp = int(m.group(1)) if m else None
-        if mode and temp is not None:
-            return {"mode": mode, "temp": temp, "power": "on"}
-    return None
-
-
 async def process_ac(chat_id: int, arg: str):
     """/ac: 에어컨 IR 제어(수동 강제 경로). LLM 을 거치지 않아 빠르고 확실하다."""
     arg = arg.strip()
@@ -604,22 +590,10 @@ async def route_text(text: str, chat_id: int):
         await send_message(chat_id, "검색어를 함께 보내주세요. 예) /search 오늘 환율")
         return
 
-    # 자연어 예약: "30분 뒤에 에어컨 꺼줘" 등. **에어컨 매칭보다 먼저** 검사해야
-    # '에어컨 꺼줘'가 즉시 실행되는 걸 막는다(안 그러면 지연이 무시됨).
-    parsed = scheduler.parse(text)
-    if parsed is not None:
-        delay, action = parsed
-        await schedule_and_confirm(chat_id, delay, action)
-        return
-
-    # 명백한 에어컨 켜기/끄기는 LLM 추론(파이에서 수십 초~수 분)을 건너뛰고
-    # ir_server 로 직행해 즉시 응답한다. 애매하면 None → 아래 에이전트 경로로.
-    ac_kwargs = match_aircon(text)
-    if ac_kwargs is not None:
-        await _ac_send(chat_id, **ac_kwargs)
-        return
-
-    # 일반 대화(에이전트 루프)
+    # 슬래시 명령이 아닌 모든 발화는 에이전트 루프로 넘긴다. 에어컨 제어·예약도
+    # 모델이 control_aircon/schedule_action 도구를 스스로 호출해 처리한다(LLM-only).
+    # (과거엔 여기서 scheduler.parse·match_aircon 자연어 fast-path 로 LLM 을 건너뛰었으나,
+    #  제습 등 모드 오인·한글 수사 미인식 문제로 제거하고 판단을 모델에 일임했다.)
     await process_message(text, chat_id)
 
 
